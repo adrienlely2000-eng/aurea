@@ -244,12 +244,59 @@ const Finance = (() => {
     return txs.filter((t) => t.kind === kind).reduce((s, t) => s + (Number(t.amount) || 0), 0);
   }
 
+  function foldText(value) {
+    return String(value || "")
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .trim();
+  }
+
+  function tokenHit(hay, needle) {
+    if (!needle || needle.length < 2) return false;
+    if (hay === needle) return true;
+    const esc = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp("(^|[^a-z0-9])" + esc + "([^a-z0-9]|$)", "i").test(hay);
+  }
+
+  function accountFromLabel(data, text, excludeId) {
+    const hay = foldText(text);
+    if (!hay) return null;
+    let best = null;
+    let bestLen = 0;
+    (data.accounts || []).forEach((a) => {
+      if (a.id === excludeId) return;
+      const name = foldText(a.name);
+      if (!name) return;
+      if (tokenHit(hay, name) && name.length > bestLen) {
+        best = a;
+        bestLen = name.length;
+      }
+      name.split(/\s+/).forEach((part) => {
+        if (part.length >= 3 && tokenHit(hay, part) && part.length > bestLen) {
+          best = a;
+          bestLen = part.length;
+        }
+      });
+    });
+    return best;
+  }
+
+  function counterpartFor(data, tx) {
+    if (tx.toAccountId && tx.toAccountId !== tx.accountId) {
+      const to = accountById(data, tx.toAccountId);
+      if (to) return to;
+    }
+    return accountFromLabel(data, tx.label || tx.name, tx.accountId);
+  }
+
   function applyToBalance(data, tx, sign) {
     const amt = Number(tx.amount) || 0;
     const dir = sign === -1 ? -1 : 1;
     const from = accountById(data, tx.accountId);
-    if (tx.kind === "transfer") {
-      const to = accountById(data, tx.toAccountId);
+    const named = tx.kind === "expense" ? counterpartFor(data, tx) : null;
+    if (tx.kind === "transfer" || named) {
+      const to = tx.kind === "transfer" ? accountById(data, tx.toAccountId) : named;
       if (from) from.balance = (Number(from.balance) || 0) - amt * dir;
       if (to) to.balance = (Number(to.balance) || 0) + amt * dir;
       return;
@@ -291,15 +338,19 @@ const Finance = (() => {
     return { status: "debited", daysUntil: Math.round((next - t) / 86400000), date: nextISO };
   }
 
+  function chargedInPeriod(data, recId, period) {
+    if (!recId) return false;
+    return (data.transactions || []).some((t) => t.recurringId === recId && t.date && inPeriod(t.date, period));
+  }
+
   function remainingCharges(data, period, today = todayISO(), accountId) {
     const items = [];
-    const current = inPeriod(today, period);
     data.recurrings.filter((r) => r.active && r.kind !== "income" && (!accountId || r.accountId === accountId)).forEach((rec) => {
       if (isDebt(rec) && Number(rec.remainingInstallments || rec.installments || 0) <= 0) return;
       const dueISO = dueDateInPeriod(rec, period);
       if (!inPeriod(dueISO, period)) return;
-      if (current && dueISO <= today) return;
-      if (!current && period.endISO < today) return;
+      if (dueISO < today) return;
+      if (chargedInPeriod(data, rec.id, period)) return;
       const st = subStatus(rec, today);
       items.push({
         rec,
@@ -320,8 +371,8 @@ const Finance = (() => {
     data.recurrings.filter((r) => r.active && r.kind === "income" && (!accountId || r.accountId === accountId)).forEach((rec) => {
       const dueISO = dueDateInPeriod(rec, period);
       if (!inPeriod(dueISO, period)) return;
-      if (current && dueISO <= today) return;
-      if (!current && period.endISO < today) return;
+      if (dueISO < today) return;
+      if (chargedInPeriod(data, rec.id, period)) return;
       items.push({
         rec,
         amount: Number(rec.amount) || 0,
@@ -355,7 +406,12 @@ const Finance = (() => {
   function dueSoon(data, days = 7, today = todayISO()) {
     const limit = toISO(addDays(parseISO(today), days));
     return data.recurrings
-      .filter((r) => r.active && r.nextDate && r.nextDate >= today && r.nextDate <= limit)
+      .filter((r) => r.active)
+      .map((r) => {
+        const st = subStatus(r, today);
+        return { ...r, nextDate: st.date };
+      })
+      .filter((r) => r.nextDate && r.nextDate >= today && r.nextDate <= limit)
       .sort((a, b) => a.nextDate.localeCompare(b.nextDate));
   }
 
@@ -363,10 +419,10 @@ const Finance = (() => {
     return data.transactions
       .filter((t) => {
         if (t.kind === "transfer") return false;
-        if (!t.date || t.date <= today) return false;
-        if (!inPeriod(t.date, period)) return false;
+        if (!t.date || !inPeriod(t.date, period)) return false;
         if (accountId && t.accountId !== accountId) return false;
-        return true;
+        if (t.applied === false) return true;
+        return t.date > today;
       })
       .sort((a, b) => String(a.date).localeCompare(String(b.date)));
   }
@@ -383,24 +439,54 @@ const Finance = (() => {
     return changed;
   }
 
+  function namedIncoming(data, period, today, accountId) {
+    const recs = [];
+    const planned = [];
+    if (!accountId) return { recs, planned, total: 0 };
+    const current = inPeriod(today, period);
+    data.recurrings
+      .filter((r) => r.active && r.kind !== "income" && r.accountId !== accountId)
+      .forEach((rec) => {
+        const dest = accountFromLabel(data, rec.name, rec.accountId);
+        if (!dest || dest.id !== accountId) return;
+        const dueISO = dueDateInPeriod(rec, period);
+        if (!inPeriod(dueISO, period)) return;
+        if (dueISO < today) return;
+        if (chargedInPeriod(data, rec.id, period)) return;
+        recs.push({ rec, amount: Number(rec.amount) || 0, nextDate: dueISO });
+      });
+    (data.transactions || []).forEach((t) => {
+      if (t.kind !== "expense" || t.accountId === accountId) return;
+      if (!t.date || !inPeriod(t.date, period)) return;
+      if (t.applied !== false && t.date <= today) return;
+      const dest = counterpartFor(data, t);
+      if (!dest || dest.id !== accountId) return;
+      planned.push(t);
+    });
+    const total = recs.reduce((s, x) => s + x.amount, 0) + planned.reduce((s, t) => s + (Number(t.amount) || 0), 0);
+    return { recs, planned, total };
+  }
+
   function snapshot(data, period, today = todayISO(), accountId) {
     const focus = accountId || (focusAccount(data) && focusAccount(data).id) || null;
     const txs = txsInPeriod(data, period, focus ? { accountId: focus } : {});
-    const spent = sumByKind(txs, "expense");
-    const earned = sumByKind(txs, "income");
+    const done = txs.filter((t) => t.applied !== false);
+    const spent = sumByKind(done, "expense");
+    const earned = sumByKind(done, "income");
     const now = currentBalance(data, focus);
     const charges = remainingCharges(data, period, today, focus);
     const incomes = remainingIncome(data, period, today, focus);
     const planned = plannedMovements(data, period, today, focus);
     const plannedOut = planned.filter((t) => t.kind === "expense").reduce((s, t) => s + (Number(t.amount) || 0), 0);
     const plannedIn = planned.filter((t) => t.kind === "income").reduce((s, t) => s + (Number(t.amount) || 0), 0);
+    const incoming = namedIncoming(data, period, today, focus);
     const chargesTotal = charges.reduce((s, x) => s + x.amount, 0) + plannedOut;
-    const incomeLeft = incomes.reduce((s, x) => s + x.amount, 0) + plannedIn;
+    const incomeLeft = incomes.reduce((s, x) => s + x.amount, 0) + plannedIn + incoming.total;
     const buffer = Number(data.settings.safetyBuffer) || 0;
-    const afterCharges = now - chargesTotal;
+    const afterCharges = now - chargesTotal + incoming.total;
     const endOfMonth = now - chargesTotal + incomeLeft;
     const left = daysLeftInPeriod(period, today);
-    const variableSpent = txs
+    const variableSpent = done
       .filter((t) => t.kind === "expense" && !t.recurringId && t.date <= today)
       .reduce((s, t) => s + (Number(t.amount) || 0), 0);
     const elapsed = Math.max(1, daysInPeriod(period) - left + (inPeriod(today, period) ? 1 : 0));
@@ -415,9 +501,11 @@ const Finance = (() => {
     const monthlyIncome = data.recurrings
       .filter((r) => r.active && r.kind === "income" && (!focus || r.accountId === focus))
       .reduce((s, r) => s + monthlyEquivalent(r), 0);
+    const monthlyFixedLeft = charges.reduce((s, x) => s + x.amount, 0);
     const incomeVariable = data.recurrings.some((r) => r.active && r.kind === "income" && r.variable !== false);
     const incomeForReste = earned > 0 ? earned : monthlyIncome;
-    const resteAVivre = incomeForReste - monthlyFixed;
+    const baseReste = incomeForReste > 0 ? incomeForReste : now;
+    const resteAVivre = baseReste - monthlyFixedLeft;
     const focusAcc = focus ? accountById(data, focus) : null;
     const debts = (data.recurrings || []).filter((r) => isDebt(r) && r.active !== false && (!focus || r.accountId === focus));
     const debtsRemaining = debts.reduce((s, r) => s + remainingDebt(r), 0);
@@ -441,12 +529,14 @@ const Finance = (() => {
       perDay,
       left,
       monthlyFixed,
+      monthlyFixedLeft,
       monthlyIncome,
       resteAVivre,
       incomeVariable,
       buffer,
       txs,
       variableSpent,
+      incoming,
       accountId: focus,
       account: focusAcc,
       debts,
@@ -457,7 +547,7 @@ const Finance = (() => {
   function byCategory(data, period, kind = "expense", accountId) {
     const map = new Map();
     txsInPeriod(data, period, accountId ? { accountId } : {})
-      .filter((t) => t.kind === kind)
+      .filter((t) => t.kind === kind && t.applied !== false)
       .forEach((t) => {
         const id = t.categoryId || "cat-autre";
         map.set(id, (map.get(id) || 0) + (Number(t.amount) || 0));
@@ -682,7 +772,8 @@ const Finance = (() => {
       ["cat-energie", /edf|engie|électricité|electricite|gaz|enedis/],
       ["cat-assurances", /assurance|maif|macif|axa|allianz|gmf/],
       ["cat-sante", /pharmacie|mutuelle|médecin|medecin|doctolib|dentiste/],
-      ["cat-sorties", /restaurant|mcdonald|burger|kebab|café|cafe|bar |uber eats|deliveroo/],
+      ["cat-restaurant", /restaurant|mcdonald|burger|kebab|uber eats|deliveroo/],
+      ["cat-sorties", /café|cafe|bar |sortie/],
       ["cat-loisirs", /cinema|cinéma|steam|playstation|concert|fnac/],
       ["cat-shopping", /zara|shein|amazon|ikea|decathlon|hm /],
       ["cat-salaire", /salaire|paie|payroll|virement employ/]
@@ -705,6 +796,7 @@ const Finance = (() => {
     nextOccurrence,
     advanceNext,
     occurrencesInRange,
+    dueDateInPeriod,
     monthlyEquivalent,
     isDebt,
     remainingDebt,
@@ -721,6 +813,7 @@ const Finance = (() => {
     txsInPeriod,
     sumByKind,
     applyToBalance,
+    accountFromLabel,
     remainingCharges,
     remainingIncome,
     plannedMovements,

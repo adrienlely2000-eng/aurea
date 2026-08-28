@@ -1,6 +1,7 @@
 /* Aurea — petit serveur local, données sur Neon (Postgres). */
 require("dotenv").config();
 const crypto = require("crypto");
+const { execSync, spawn } = require("child_process");
 const express = require("express");
 const { Pool } = require("pg");
 
@@ -250,12 +251,61 @@ app.post("/api/rename", async (req, res) => {
 });
 
 initDb()
-  .then(() => {
-    app.listen(PORT, "127.0.0.1", () => {
-      console.log("Aurea est prêt → http://127.0.0.1:" + PORT);
+  .then(async () => {
+    const old = pidsOnPort(PORT);
+    if (old.length) {
+      freePort(PORT);
+      await new Promise((r) => setTimeout(r, 400));
+    }
+    const url = "http://127.0.0.1:" + PORT;
+    const server = app.listen(PORT, "127.0.0.1", () => {
+      console.log("Aurea est prêt → " + url);
+      console.log("Laisse cette fenêtre ouverte. Ferme-la pour quitter.");
+      openBrowser(url);
+    });
+    server.on("error", (err) => {
+      console.error("Impossible de lancer Aurea :", err.message);
+      process.exit(1);
     });
   })
   .catch((err) => {
     console.error("Impossible de joindre Neon :", err.message);
     process.exit(1);
   });
+
+function pidsOnPort(port) {
+  try {
+    const out = execSync("netstat -ano -p tcp", { encoding: "utf8" });
+    const pids = new Set();
+    out.split(/\r?\n/).forEach((line) => {
+      if (!/LISTENING/i.test(line)) return;
+      if (!line.includes(":" + port)) return;
+      const parts = line.trim().split(/\s+/);
+      const local = parts[1] || "";
+      if (!local.endsWith(":" + port)) return;
+      const pid = parts[parts.length - 1];
+      if (pid && pid !== "0" && pid !== String(process.pid)) pids.add(pid);
+    });
+    return [...pids];
+  } catch (err) {
+    return [];
+  }
+}
+
+function freePort(port) {
+  pidsOnPort(port).forEach((pid) => {
+    try { execSync("taskkill /PID " + pid + " /F", { stdio: "ignore" }); } catch (err) {}
+  });
+}
+
+function openBrowser(url) {
+  try {
+    if (process.platform === "win32") {
+      spawn("explorer.exe", [url], { detached: true, stdio: "ignore" }).unref();
+    } else if (process.platform === "darwin") {
+      spawn("open", [url], { detached: true, stdio: "ignore" }).unref();
+    } else {
+      spawn("xdg-open", [url], { detached: true, stdio: "ignore" }).unref();
+    }
+  } catch (err) {}
+}

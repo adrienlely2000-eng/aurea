@@ -17,6 +17,7 @@ const Store = (() => {
     { id: "cat-assurances", name: "Assurances", icon: "◇", color: "#8aa0b8", kind: "expense" },
     { id: "cat-sante", name: "Santé", icon: "+", color: "#d4899a", kind: "expense" },
     { id: "cat-sorties", name: "Sorties", icon: "○", color: "#d4926a", kind: "expense" },
+    { id: "cat-restaurant", name: "Restaurant", icon: "🍽", color: "#d4a07a", kind: "expense" },
     { id: "cat-loisirs", name: "Loisirs", icon: "✶", color: "#8ab4c8", kind: "expense" },
     { id: "cat-voyage", name: "Voyage", icon: "✈", color: "#6a9ec4", kind: "expense" },
     { id: "cat-cadeaux", name: "Cadeaux", icon: "❀", color: "#c48aa0", kind: "expense" },

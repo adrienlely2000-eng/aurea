@@ -67,7 +67,17 @@ const App = (() => {
 
   function ensurePeriod() {
     const day = db().settings.monthStartDay || 1;
-    if (!state.period) state.period = F.periodOf(state.today, day);
+    const realToday = F.todayISO();
+    const oldToday = state.today;
+    state.today = realToday;
+    if (!state.period) {
+      state.period = F.periodOf(state.today, day);
+      return;
+    }
+    const wasOnTodayMonth = F.inPeriod(oldToday, state.period);
+    if (wasOnTodayMonth && !F.inPeriod(state.today, state.period)) {
+      state.period = F.periodOf(state.today, day);
+    }
   }
 
   function toast(text, action) {
@@ -175,6 +185,26 @@ const App = (() => {
         amount: item.amount,
         extra: item.daysUntil === 0 ? " · aujourd’hui" : item.daysUntil ? " · dans " + item.daysUntil + " j" : ""
       })),
+      ...((snap.incoming && snap.incoming.recs) || []).map((item) => ({
+        kind: "rec",
+        id: item.rec.id,
+        icon: F.categoryById(data, item.rec.categoryId).icon,
+        name: item.rec.name,
+        date: item.nextDate,
+        amount: item.amount,
+        extra: " · arrive ici",
+        incoming: true
+      })),
+      ...((snap.incoming && snap.incoming.planned) || []).map((t) => ({
+        kind: "tx",
+        id: t.id,
+        icon: F.categoryById(data, t.categoryId).icon,
+        name: t.label,
+        date: t.date,
+        amount: t.amount,
+        extra: " · arrive ici",
+        incoming: true
+      })),
       ...snap.planned.filter((t) => t.kind === "expense").map((t) => ({
         kind: "tx",
         id: t.id,
@@ -182,7 +212,7 @@ const App = (() => {
         name: t.label,
         date: t.date,
         amount: t.amount,
-        extra: " · prévu"
+        extra: " · à pointer"
       }))
     ].sort((a, b) => String(a.date).localeCompare(String(b.date)));
 
@@ -199,13 +229,17 @@ const App = (() => {
         <article class="card metal">
           <p class="kicker">Maintenant</p>
           <p class="hero-num">${esc(F.money(snap.now))}</p>
-          <p class="hint">${esc(accName)} · ce que tu as aujourd’hui</p>
+          <p class="hint">${esc(accName)} · solde réel (comme à la banque)</p>
         </article>
         <article class="card">
           <p class="kicker">Une fois les dépenses faites</p>
           <p class="hero-num ${afterTone}">${esc(F.money(snap.afterCharges))}</p>
           <p class="hint">${
-            snap.chargesTotal > 0
+            snap.incoming && snap.incoming.total > 0 && snap.chargesTotal > 0
+              ? `${esc(F.money(snap.now))} − ${esc(F.money(snap.chargesTotal))} + ${esc(F.money(snap.incoming.total))} qui arrive (ex. épargne)`
+              : snap.incoming && snap.incoming.total > 0
+                ? `${esc(F.money(snap.now))} + ${esc(F.money(snap.incoming.total))} encore à recevoir sur ce compte`
+              : snap.chargesTotal > 0
               ? `${esc(F.money(snap.now))} − ${esc(F.money(snap.chargesTotal))} encore à venir ce mois (forfaits, dettes, mouvements datés)`
               : "Aucune dépense encore prévue sur ce mois"
           }</p>
@@ -231,6 +265,7 @@ const App = (() => {
             ["cat-courses", "Courses"],
             ["cat-transport", "Essence / transport"],
             ["cat-sorties", "Sorties"],
+            ["cat-restaurant", "Restaurant"],
             ["cat-forfaits", "Forfait"],
             ["cat-autre", "Autre"]
           ].map(([id, name], i) => `<button type="button" data-cat="${id}" class="${i === 0 ? "is-on" : ""}">${esc(name)}</button>`).join("")}
@@ -276,32 +311,47 @@ const App = (() => {
           ${snap.plannedOut ? `<p class="hint">dont ${esc(F.money(snap.plannedOut))} encore à venir</p>` : ""}
         </article>
         <article class="card">
-          <p class="kicker">Reçu ce mois</p>
-          <p class="hero-num pos" style="font-size:1.8rem">${esc(F.money(snap.earned))}</p>
-          <p class="hint">Le montant peut changer d’un mois à l’autre</p>
-          <button class="btn gold" style="margin-top:10px" data-action="log-income">Saisir un revenu</button>
+          <form data-form="quick-salary">
+            <p class="kicker">Reçu ce mois</p>
+            <p class="hero-num pos" style="font-size:1.8rem">${esc(F.money(snap.earned))}</p>
+            <p class="hint">${snap.earned > 0 ? "Salaire déjà noté. Un extra ? Ajoute-le." : "Tu viens d’être payé ? Note le montant, c’est tout."}</p>
+            <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;margin-top:10px">
+              <div class="field" style="flex:1;min-width:120px">
+                <label>Salaire reçu</label>
+                <input name="amount" inputmode="decimal" placeholder="1850" required />
+              </div>
+              <button class="btn gold" type="submit">OK</button>
+            </div>
+          </form>
         </article>
         <article class="card">
           <p class="kicker">Reste à vivre</p>
-          <p class="hero-num" style="font-size:1.8rem">${esc(F.money(snap.resteAVivre))}</p>
-          <p class="hint">${esc(F.money(snap.earned > 0 ? snap.earned : snap.monthlyIncome))} de revenu − ${esc(F.money(snap.monthlyFixed))} de forfaits</p>
+          <p class="hero-num ${snap.resteAVivre < 0 ? "neg" : ""}" style="font-size:1.8rem">${esc(F.money(snap.resteAVivre))}</p>
+          <p class="hint">${
+            (snap.earned > 0 || snap.monthlyIncome > 0)
+              ? `${esc(F.money(snap.earned > 0 ? snap.earned : snap.monthlyIncome))} de revenu − ${esc(F.money(snap.monthlyFixedLeft))} encore à payer ce mois`
+              : snap.monthlyFixedLeft > 0
+                ? `${esc(F.money(snap.now))} de solde − ${esc(F.money(snap.monthlyFixedLeft))} de forfaits encore à payer`
+                : "Plus aucun forfait à payer ce mois-ci (déjà passé, ça compte le mois prochain)"
+          }</p>
         </article>
       </div>
 
       <div class="grid grid-2" style="margin-top:16px">
         <article class="card">
           <div class="split">
-            <p class="kicker">Dépenses encore à venir</p>
+            <p class="kicker">Pas encore passé à la banque</p>
             <button class="btn ghost" data-action="quick-add">Ajouter</button>
           </div>
+          <p class="hint">Uniquement aujourd’hui et plus tard. Un forfait le 12 ou le 27, le 28, c’est déjà passé — il est dans ton solde réel (Actualiser si besoin). Clique ici seulement quand la banque vient de prélever.</p>
           <div class="list">
             ${
               upcomingRows.length
                 ? upcomingRows.map((item) => `
-                  <button class="row" data-action="${item.kind === "rec" ? "pay-recurring" : "edit-tx"}" data-id="${esc(item.id)}">
+                  <button class="row" data-action="${item.kind === "rec" ? "pay-recurring" : "pointer-tx"}" data-id="${esc(item.id)}">
                     <span class="glyph">${esc(item.icon)}</span>
                     <span><b>${esc(item.name)}</b><small>${esc(F.formatDate(item.date))}${esc(item.extra)}</small></span>
-                    <span class="amt out">− ${esc(F.money(item.amount))}</span>
+                    <span class="amt ${item.incoming ? "in" : "out"}">${item.incoming ? "+" : "−"} ${esc(F.money(item.amount))}</span>
                   </button>`).join("")
                 : `<p class="hint">Ajoute un mouvement avec une date : il sera retiré de « une fois les dépenses faites ».</p>`
             }
@@ -444,6 +494,14 @@ const App = (() => {
     const forfaits = data.recurrings.filter((r) => r.kind !== "income" && r.mode !== "debt");
     const dettes = data.recurrings.filter((r) => r.mode === "debt");
     const revenus = data.recurrings.filter((r) => r.kind === "income");
+    const accId = focusId();
+    const forfaitsMonth = forfaits
+      .filter((r) => r.active !== false && (!accId || r.accountId === accId))
+      .reduce((s, r) => s + F.monthlyEquivalent(r), 0);
+    const dettesMonth = dettes
+      .filter((r) => r.active !== false && (!accId || r.accountId === accId))
+      .reduce((s, r) => s + F.monthlyEquivalent(r), 0);
+    const depenseMois = forfaitsMonth + dettesMonth;
     const groups = [
       { title: "Forfaits & abos", list: forfaits, empty: "Mobile, internet, Netflix… Ajoute-les un par un.", action: "new-recurring", label: "Ajouter un forfait" },
       { title: "Dettes & paiements en plusieurs fois", list: dettes, empty: "Amazon en 10 fois, crédit tel… Indique la mensualité et les mois restants.", action: "new-debt", label: "Ajouter une dette" },
@@ -457,10 +515,15 @@ const App = (() => {
           <button class="btn gold" data-action="new-debt">Ajouter une dette</button>
         </div>
       </div>
+      <article class="card metal" style="margin-bottom:16px">
+        <p class="kicker">Dépense par mois</p>
+        <p class="hero-num">${esc(F.money(depenseMois))}</p>
+        <p class="hint">${esc(F.money(forfaitsMonth))} de forfaits + ${esc(F.money(dettesMonth))} de dettes (mensualités)</p>
+      </article>
       <div class="grid grid-3">
-        <article class="card"><p class="kicker">Fixes / mois</p><p class="hero-num" style="font-size:1.8rem">${esc(F.money(snap.monthlyFixed))}</p></article>
-        <article class="card"><p class="kicker">Dettes restantes</p><p class="hero-num" style="font-size:1.8rem">${esc(F.money(snap.debtsRemaining))}</p><p class="hint">${snap.debts.length} en cours</p></article>
-        <article class="card"><p class="kicker">Reste à vivre</p><p class="hero-num gold" style="font-size:1.8rem">${esc(F.money(snap.resteAVivre))}</p></article>
+        <article class="card"><p class="kicker">Forfaits / mois</p><p class="hero-num" style="font-size:1.8rem">${esc(F.money(forfaitsMonth))}</p></article>
+        <article class="card"><p class="kicker">Dettes restantes</p><p class="hero-num" style="font-size:1.8rem">${esc(F.money(snap.debtsRemaining))}</p><p class="hint">${esc(F.money(dettesMonth))} / mois · ${snap.debts.length} en cours</p></article>
+        <article class="card"><p class="kicker">Reste à vivre</p><p class="hero-num ${snap.resteAVivre < 0 ? "neg" : "gold"}" style="font-size:1.8rem">${esc(F.money(snap.resteAVivre))}</p><p class="hint">${snap.monthlyFixedLeft > 0 ? "forfaits encore à payer ce mois" : "plus rien à payer ce mois-ci"}</p></article>
       </div>
       <p class="hint" style="margin-top:8px">Raccourcis forfaits :</p>
       <div class="cat-picks" style="margin-bottom:8px">
@@ -576,7 +639,12 @@ const App = (() => {
     for (let i = 0; i < startWeek; i++) html += `<div class="day mute"></div>`;
     for (let d = 1; d <= lastDate; d++) {
       const iso = F.toISO(new Date(y, m, d));
-      const recs = data.recurrings.filter((r) => r.active && r.nextDate === iso && (!focusId() || r.accountId === focusId()));
+      const recs = data.recurrings.filter((r) => {
+        if (!r.active) return false;
+        if (focusId() && r.accountId !== focusId()) return false;
+        const period = F.periodOf(iso, 1);
+        return F.dueDateInPeriod(r, period) === iso;
+      });
       const planned = data.transactions.filter((t) => t.date === iso && t.kind !== "transfer" && (!focusId() || t.accountId === focusId()));
       const hasOut = recs.some((r) => r.kind !== "income") || planned.some((t) => t.kind === "expense");
       const hasIn = recs.some((r) => r.kind === "income") || planned.some((t) => t.kind === "income");
@@ -700,8 +768,6 @@ const App = (() => {
     }
     ensurePeriod();
     ensureFocus();
-    if (F.settleDue(db(), state.today)) Store.save();
-    if (F.settleDebts(db(), state.today)) Store.save();
     document.documentElement.dataset.theme = db().settings.theme || "dark";
     setNav();
     $("#main").innerHTML = (views[state.view] || viewDashboard)();
@@ -834,9 +900,12 @@ const App = (() => {
               <option value="yearly" ${r.frequency === "yearly" ? "selected" : ""}>Annuel</option>
             </select>
           </div>
-          <div class="field"><label>Jour du mois</label><input name="dayOfMonth" type="number" min="1" max="28" value="${esc(r.dayOfMonth || 1)}" /></div>
-          <div class="field"><label>Prochaine date</label><input type="date" name="nextDate" value="${esc(r.nextDate)}" required /></div>
+          <div class="field"><label>Jour du mois</label>
+            <input name="dayOfMonth" type="number" min="1" max="31" value="${esc(r.dayOfMonth || 1)}" />
+            <small class="hint">27 = tous les 27 de chaque mois</small>
+          </div>
           <div class="field"><label>Compte</label><select name="accountId">${accountOptions(r.accountId)}</select></div>
+          <p class="hint full">Si le nom contient un autre compte (ex. PEL), l’argent part d’ici et arrive là-bas.</p>
           <div class="field full"><label>Catégorie</label>${catButtons(r.kind === "income" ? "income" : "expense", r.categoryId)}</div>
           <label class="switch full" id="var-wrap" style="${isDebt || r.kind !== "income" ? "display:none" : ""}"><input type="checkbox" name="variable" ${r.variable !== false ? "checked" : ""}/> Le montant change à chaque fois</label>
           <label class="switch full"><input type="checkbox" name="active" ${r.active !== false ? "checked" : ""}/> Actif</label>
@@ -921,10 +990,14 @@ const App = (() => {
       note: payload.note || "",
       recurringId: payload.recurringId || ""
     };
+    if (tx.kind === "expense" && !tx.toAccountId) {
+      const dest = F.accountFromLabel(data, tx.label, tx.accountId);
+      if (dest) tx.toAccountId = dest.id;
+    }
     const future = tx.date > state.today;
-    tx.applied = !future;
+    tx.applied = payload.waitPointer ? false : !future;
     data.transactions.push(tx);
-    if (!future) F.applyToBalance(data, tx, 1);
+    if (tx.applied) F.applyToBalance(data, tx, 1);
     if (!skipSave) Store.save();
     return tx;
   }
@@ -943,6 +1016,20 @@ const App = (() => {
       if (tx.applied !== false) F.applyToBalance(data, tx, 1);
       Store.save();
     });
+  }
+
+  function pointerTx(id) {
+    const data = db();
+    const tx = data.transactions.find((t) => t.id === id);
+    if (!tx) return;
+    if (tx.applied !== false) {
+      toast("Déjà pointé");
+      return;
+    }
+    F.applyToBalance(data, tx, 1);
+    tx.applied = true;
+    Store.save();
+    toast((tx.label || "Dépense") + " pointé — solde réel mis à jour");
   }
 
   function payAmountModal(rec) {
@@ -966,14 +1053,24 @@ const App = (() => {
     return rec.kind === "income";
   }
 
+  const payingNow = new Set();
+
   function payRecurring(id, amountOverride) {
+    if (payingNow.has(id)) return "busy";
     const data = db();
     const rec = data.recurrings.find((r) => r.id === id);
     if (!rec) return;
+    const period = state.period || F.periodOf(state.today, data.settings.monthStartDay || 1);
+    const already = data.transactions.some((t) => t.recurringId === rec.id && t.date && F.inPeriod(t.date, period));
+    if (already) {
+      toast("Déjà pointé ce mois-ci");
+      return "skip";
+    }
     if (amountOverride == null && isVariableRec(rec)) {
       payAmountModal(rec);
       return "prompt";
     }
+    payingNow.add(id);
     const amount = amountOverride == null ? rec.amount : amountOverride;
     addTx({
       kind: rec.kind,
@@ -993,7 +1090,8 @@ const App = (() => {
     }
     rec.nextDate = F.advanceNext(rec, rec.nextDate || state.today);
     Store.save();
-    toast(rec.mode === "debt" && rec.remainingInstallments <= 0 ? rec.name + " — dernière mensualité, dette soldée" : rec.kind === "income" ? "Revenu enregistré" : rec.name + " pointé");
+    payingNow.delete(id);
+    toast(rec.mode === "debt" && rec.remainingInstallments <= 0 ? rec.name + " — dernière mensualité, dette soldée" : rec.kind === "income" ? "Revenu enregistré" : rec.name + " pointé — solde réel mis à jour");
     return "done";
   }
 
@@ -1480,6 +1578,11 @@ const App = (() => {
       case "edit-tx":
         txForm(data.transactions.find((t) => t.id === id));
         break;
+      case "pointer-tx":
+        act.disabled = true;
+        pointerTx(id);
+        render();
+        break;
       case "delete-tx":
         removeTx(id);
         closeModal();
@@ -1520,6 +1623,7 @@ const App = (() => {
         toast("Charge supprimée");
         break;
       case "pay-recurring":
+        act.disabled = true;
         if (payRecurring(id) === "prompt") break;
         closeModal();
         render();
@@ -1680,22 +1784,49 @@ const App = (() => {
         label: (obj.label || "").trim() || (cat && cat.name) || "Dépense",
         date: state.today,
         accountId: acc.id,
-        categoryId: guessed || obj.categoryId || "cat-autre"
+        categoryId: guessed || obj.categoryId || "cat-autre",
+        waitPointer: true
       });
-      toast("Noté");
+      toast("Noté — clique dessus pour pointer quand c’est passé à la banque");
+      render();
+    }
+    if (type === "quick-salary") {
+      const acc = F.focusAccount(data);
+      if (!acc) {
+        toast("Ajoute un compte d’abord");
+        return;
+      }
+      const amount = parseAmount(obj.amount);
+      if (!amount) {
+        toast("Indique le montant du salaire");
+        return;
+      }
+      const rec = data.recurrings.find((r) => r.active && r.kind === "income" && (!focusId() || r.accountId === focusId()));
+      addTx({
+        kind: "income",
+        amount,
+        label: (rec && rec.name) || "Salaire",
+        date: state.today,
+        accountId: acc.id,
+        categoryId: (rec && rec.categoryId) || "cat-salaire",
+        recurringId: rec ? rec.id : ""
+      });
+      if (rec) rec.amount = amount;
+      toast("Salaire noté");
       render();
     }
     if (type === "tx") {
       if (form.dataset.id) {
         const old = data.transactions.find((t) => t.id === form.dataset.id);
         if (old && old.applied !== false) F.applyToBalance(data, old, -1);
+        const dest = obj.kind === "expense" ? F.accountFromLabel(data, obj.label, obj.accountId) : null;
         Object.assign(old, {
           kind: obj.kind,
           amount: parseAmount(obj.amount),
           label: obj.label.trim(),
           date: obj.date,
           accountId: obj.accountId,
-          toAccountId: obj.toAccountId || "",
+          toAccountId: dest ? dest.id : (obj.toAccountId || ""),
           categoryId: obj.categoryId,
           note: obj.note || ""
         });
@@ -1740,14 +1871,24 @@ const App = (() => {
         dayOfMonth: Number(obj.dayOfMonth) || 1,
         accountId: obj.accountId,
         categoryId: obj.categoryId || (obj.mode === "debt" ? "cat-dettes" : "cat-forfaits"),
-        nextDate: obj.nextDate,
-        startDate: obj.nextDate,
+        nextDate: (() => {
+          const day = Math.min(31, Math.max(1, Number(obj.dayOfMonth) || 1));
+          const t = F.parseISO(state.today);
+          let d = new Date(t.getFullYear(), t.getMonth(), Math.min(day, new Date(t.getFullYear(), t.getMonth() + 1, 0).getDate()));
+          if (F.toISO(d) < state.today) d = F.addMonths(d, 1);
+          return F.toISO(d);
+        })(),
         active: obj.active !== false,
         variable: obj.kind === "income" ? obj.variable !== false : !!obj.variable,
         remainingInstallments: obj.mode === "debt" ? Math.max(1, Number(obj.remainingInstallments) || 1) : undefined,
         installments: obj.mode === "debt" ? Math.max(1, Number(obj.remainingInstallments) || Number(obj.installments) || 1) : undefined,
         remainingAmount: obj.mode === "debt" ? parseAmount(obj.amount) * Math.max(1, Number(obj.remainingInstallments) || 1) : undefined
       };
+      recObj.startDate = recObj.nextDate;
+      if (recObj.kind !== "income") {
+        const dest = F.accountFromLabel(data, recObj.name, recObj.accountId);
+        recObj.toAccountId = dest ? dest.id : "";
+      }
       if (form.dataset.id) {
         const prev = data.recurrings.find((r) => r.id === form.dataset.id);
         recObj.lastSettledKey = prev && prev.lastSettledKey;
@@ -1891,6 +2032,15 @@ const App = (() => {
       if (db().accounts.length) txForm();
     }
   });
+
+  setInterval(() => {
+    if (F.todayISO() === state.today) return;
+    if (!Store.isUnlocked()) {
+      state.today = F.todayISO();
+      return;
+    }
+    render();
+  }, 60 * 1000);
 
   return { render, go };
 })();
