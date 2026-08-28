@@ -17,7 +17,10 @@ const App = (() => {
 
   const lock = { screen: "home", profileId: "", error: "" };
   const IDLE_MS = 3 * 60 * 1000;
+  const NEWS_ID = "2026-08-28";
+  const NEWS_KEY = "aurea.news.seen";
   let idleTimer = 0;
+  let newsPrompted = false;
 
   function bumpIdle() {
     clearTimeout(idleTimer);
@@ -786,6 +789,35 @@ const App = (() => {
     if (!db().settings.setupDone) openOnboard();
     else $("#onboard-root").hidden = true;
     bumpIdle();
+    maybeShowNews();
+  }
+
+  function maybeShowNews() {
+    if (newsPrompted || !Store.isUnlocked() || !db().settings.setupDone) return;
+    try {
+      if (localStorage.getItem(NEWS_KEY) === NEWS_ID) return;
+    } catch (err) {
+      return;
+    }
+    const modal = $("#modal-root");
+    if (modal && !modal.hidden) return;
+    newsPrompted = true;
+    openModal(`
+      <div class="split"><p class="kicker">Nouveautés</p><button class="icon-btn" data-action="ack-news">✕</button></div>
+      <p class="hero-num" style="font-size:1.55rem">Petite mise à jour</p>
+      <p class="hint">Au lancement, Aurea se met à jour tout seul. Plus besoin de clé USB.</p>
+      <ul class="hint" style="margin:14px 0 0;padding-left:18px;line-height:1.65">
+        <li><b>Dépense rapide</b> : l’argent ne bouge pas tant que tu n’as pas cliqué pour pointer (quand c’est passé à la banque).</li>
+        <li>Mets <b>+</b> devant le montant pour <b>ajouter</b> de l’argent, ex. +20.</li>
+        <li>Laisse la fenêtre noire ouverte tant que tu utilises le site.</li>
+      </ul>
+      <button class="btn gold block" style="margin-top:18px" data-action="ack-news">C’est noté</button>
+    `);
+  }
+
+  function ackNews() {
+    try { localStorage.setItem(NEWS_KEY, NEWS_ID); } catch (err) {}
+    closeModal();
   }
 
   /* ---------- Formulaires ---------- */
@@ -1562,6 +1594,9 @@ const App = (() => {
         break;
       case "close-modal":
         dismissModal();
+        break;
+      case "ack-news":
+        ackNews();
         break;
       case "lock":
         Store.lock();
