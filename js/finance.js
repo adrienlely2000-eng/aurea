@@ -483,7 +483,7 @@ const Finance = (() => {
     const chargesTotal = charges.reduce((s, x) => s + x.amount, 0) + plannedOut;
     const incomeLeft = incomes.reduce((s, x) => s + x.amount, 0) + plannedIn + incoming.total;
     const buffer = Number(data.settings.safetyBuffer) || 0;
-    const afterCharges = now - chargesTotal + incoming.total;
+    const afterCharges = now - chargesTotal + incoming.total + plannedIn;
     const endOfMonth = now - chargesTotal + incomeLeft;
     const left = daysLeftInPeriod(period, today);
     const variableSpent = done

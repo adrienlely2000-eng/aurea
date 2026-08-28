@@ -213,6 +213,16 @@ const App = (() => {
         date: t.date,
         amount: t.amount,
         extra: " · à pointer"
+      })),
+      ...snap.planned.filter((t) => t.kind === "income").map((t) => ({
+        kind: "tx",
+        id: t.id,
+        icon: F.categoryById(data, t.categoryId).icon,
+        name: t.label,
+        date: t.date,
+        amount: t.amount,
+        extra: " · à pointer",
+        incoming: true
       }))
     ].sort((a, b) => String(a.date).localeCompare(String(b.date)));
 
@@ -254,8 +264,9 @@ const App = (() => {
       </form>
       <form data-form="quick-expense" class="card" style="margin-top:16px">
         <p class="kicker">Dépense rapide</p>
+        <p class="hint">Sans signe = on enlève. Mets <b>+</b> devant pour ajouter, ex. +20.</p>
         <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-top:8px">
-          <div class="field" style="flex:1;min-width:120px"><label>Montant</label><input name="amount" inputmode="decimal" placeholder="12,50" required /></div>
+          <div class="field" style="flex:1;min-width:120px"><label>Montant</label><input name="amount" inputmode="text" placeholder="12,50 ou +20" required /></div>
           <div class="field" style="flex:2;min-width:160px"><label>Quoi (optionnel)</label><input name="label" placeholder="Courses, essence…" /></div>
           <input type="hidden" name="categoryId" value="cat-courses" />
           <button class="btn gold" type="submit">OK</button>
@@ -973,6 +984,10 @@ const App = (() => {
     if (raw == null) return 0;
     const n = Number(String(raw).replace(/\s/g, "").replace(",", "."));
     return Number.isFinite(n) ? Math.abs(n) : 0;
+  }
+
+  function isPlusAmount(raw) {
+    return /^\s*\+/.test(String(raw || ""));
   }
 
   function addTx(payload, skipSave) {
@@ -1776,18 +1791,25 @@ const App = (() => {
         toast("Indique un montant");
         return;
       }
+      const addMoney = isPlusAmount(obj.amount);
       const cat = data.categories.find((c) => c.id === obj.categoryId);
       const guessed = F.suggestCategory(obj.label);
+      const guessedCat = guessed && data.categories.find((c) => c.id === guessed);
+      const categoryId = addMoney
+        ? (guessedCat && guessedCat.kind === "income" ? guessed : "cat-autre-in")
+        : (guessed || obj.categoryId || "cat-autre");
       addTx({
-        kind: "expense",
+        kind: addMoney ? "income" : "expense",
         amount,
-        label: (obj.label || "").trim() || (cat && cat.name) || "Dépense",
+        label: (obj.label || "").trim() || (addMoney ? "Argent reçu" : (cat && cat.name) || "Dépense"),
         date: state.today,
         accountId: acc.id,
-        categoryId: guessed || obj.categoryId || "cat-autre",
+        categoryId,
         waitPointer: true
       });
-      toast("Noté — clique dessus pour pointer quand c’est passé à la banque");
+      toast(addMoney
+        ? "Noté en plus — clique dessus pour pointer quand c’est arrivé à la banque"
+        : "Noté — clique dessus pour pointer quand c’est passé à la banque");
       render();
     }
     if (type === "quick-salary") {

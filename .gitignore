@@ -1,5 +1,7 @@
 .env
 node_modules/
+tools/node/
+tools/update-rev.txt
 *.log
 .DS_Store
 Thumbs.db

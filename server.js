@@ -301,7 +301,7 @@ function freePort(port) {
 function openBrowser(url) {
   try {
     if (process.platform === "win32") {
-      spawn("explorer.exe", [url], { detached: true, stdio: "ignore" }).unref();
+      spawn("cmd", ["/c", "start", "", url], { detached: true, stdio: "ignore", windowsHide: true }).unref();
     } else if (process.platform === "darwin") {
       spawn("open", [url], { detached: true, stdio: "ignore" }).unref();
     } else {
