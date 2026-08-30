@@ -67,7 +67,8 @@ const Store = (() => {
       categories: CATEGORIES.map((c) => ({ ...c, budget: 0 })),
       transactions: [],
       recurrings: [],
-      goals: []
+      goals: [],
+      categoryMemory: {}
     };
   }
 
@@ -89,6 +90,7 @@ const Store = (() => {
     next.transactions = next.transactions || [];
     next.recurrings = next.recurrings || [];
     next.goals = next.goals || [];
+    next.categoryMemory = (parsed && parsed.categoryMemory && typeof parsed.categoryMemory === "object") ? parsed.categoryMemory : {};
     return next;
   }
 

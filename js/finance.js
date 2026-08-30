@@ -762,7 +762,39 @@ const Finance = (() => {
     return list.slice(0, 6);
   }
 
-  function suggestCategory(label) {
+  function memoryKeys(label) {
+    let s = foldText(label);
+    s = s.replace(/\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}/g, " ");
+    s = s.replace(/\d+([,.]\d{2})?/g, " ");
+    s = s.replace(/\s+/g, " ").trim();
+    const keys = [];
+    if (s.length >= 2) keys.push(s);
+    const stripped = s.replace(/^(vir sepa|virement|vir|prlv|prelevement|carte|cb|paiement)\s+/, "").trim();
+    if (stripped.length >= 3 && stripped !== s) keys.push(stripped);
+    return keys;
+  }
+
+  function rememberCategory(data, label, categoryId) {
+    if (!data || !categoryId || !String(label || "").trim()) return;
+    if (!data.categoryMemory || typeof data.categoryMemory !== "object") data.categoryMemory = {};
+    memoryKeys(label).forEach((k) => {
+      data.categoryMemory[k] = categoryId;
+    });
+  }
+
+  function recallCategory(data, label) {
+    const mem = data && data.categoryMemory;
+    if (!mem) return null;
+    const keys = memoryKeys(label);
+    for (let i = 0; i < keys.length; i++) {
+      if (mem[keys[i]]) return mem[keys[i]];
+    }
+    return null;
+  }
+
+  function suggestCategory(label, data) {
+    const remembered = recallCategory(data, label);
+    if (remembered) return remembered;
     const s = foldText(label);
     if (!s || s.length < 2) return null;
     const rules = [
@@ -786,6 +818,16 @@ const Finance = (() => {
     ];
     for (const [id, re] of rules) if (re.test(s)) return id;
     return null;
+  }
+
+  function monthRecap(data, period, accountId) {
+    const txs = txsInPeriod(data, period, accountId ? { accountId } : {}).filter((t) => t.applied !== false);
+    const spent = sumByKind(txs, "expense");
+    const earned = sumByKind(txs, "income");
+    const forfaits = (data.recurrings || [])
+      .filter((r) => r.active !== false && r.kind !== "income" && (!accountId || r.accountId === accountId))
+      .reduce((s, r) => s + monthlyEquivalent(r), 0);
+    return { spent, earned, forfaits, label: monthLabel(period), startISO: period.startISO };
   }
 
   function parseFrAmount(raw) {
@@ -998,6 +1040,8 @@ const Finance = (() => {
     forecast,
     insights,
     suggestCategory,
+    rememberCategory,
+    monthRecap,
     parseBankCsv,
     yearSummary,
     csvFingerprint

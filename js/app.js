@@ -18,7 +18,7 @@ const App = (() => {
 
   const lock = { screen: "home", profileId: "", error: "" };
   const IDLE_MS = 3 * 60 * 1000;
-  const NEWS_ID = "2026-08-30";
+  const NEWS_ID = "2026-08-30-2";
   const NEWS_KEY = "aurea.news.seen";
   let idleTimer = 0;
   let newsPrompted = false;
@@ -156,6 +156,17 @@ const App = (() => {
 
   /* ---------- Vues ---------- */
 
+  function recapBlock(recap, title, dismiss) {
+    return `
+      <article class="card" style="margin-bottom:16px">
+        <div class="split">
+          <p class="kicker">${esc(title)}</p>
+          ${dismiss ? `<button class="btn ghost" data-action="dismiss-recap" data-id="${esc(recap.startISO)}">OK</button>` : ""}
+        </div>
+        <p>Dépensé <b>${esc(F.money(recap.spent))}</b> · Reçu <b>${esc(F.money(recap.earned))}</b> · Forfaits <b>${esc(F.money(recap.forfaits))}</b></p>
+      </article>`;
+  }
+
   function viewDashboard() {
     const data = db();
     const accId = focusId();
@@ -171,6 +182,21 @@ const App = (() => {
     const insights = F.insights(data, state.period, state.today, accId);
     const afterTone = snap.afterCharges < 0 ? "neg" : "gold";
     const budgetAlerts = F.budgets(data, state.period, accId).filter((b) => b.ratio >= 0.8);
+    const viewingNow = F.inPeriod(state.today, state.period);
+    const elapsed = F.daysInPeriod(state.period) - F.daysLeftInPeriod(state.period, state.today) + (viewingNow ? 1 : 0);
+    let recapHtml = "";
+    if (!viewingNow) {
+      const recap = F.monthRecap(data, state.period, accId);
+      recapHtml = recapBlock(recap, "Récap " + recap.label, false);
+    } else if (elapsed <= 7) {
+      const prev = F.shiftPeriod(state.period, -1, data.settings.monthStartDay || 1);
+      const recap = F.monthRecap(data, prev, accId);
+      let seen = "";
+      try { seen = localStorage.getItem("aurea.recap.seen") || ""; } catch (err) { seen = ""; }
+      if (seen !== recap.startISO && (recap.spent > 0 || recap.earned > 0 || recap.forfaits > 0)) {
+        recapHtml = recapBlock(recap, "Récap de " + recap.label, true);
+      }
+    }
 
     const dueBanner = due.length ? `
       <div class="card" style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap">
@@ -241,6 +267,7 @@ const App = (() => {
     return `
       ${accountPicker}
       ${dueBanner}
+      ${recapHtml}
       <div class="grid grid-kpis" style="margin-top:${due.length || data.accounts.length > 1 ? "16px" : "0"}">
         <article class="card metal">
           <p class="kicker">Maintenant</p>
@@ -863,12 +890,10 @@ const App = (() => {
     openModal(`
       <div class="split"><p class="kicker">Nouveautés</p><button class="icon-btn" data-action="ack-news">✕</button></div>
       <p class="hero-num" style="font-size:1.55rem">Nouvelle mise à jour</p>
-      <p class="hint">Comme d’habitude : laisse la fenêtre noire ouverte. Aurea s’est mis à jour tout seul.</p>
+      <p class="hint">Laisse la fenêtre noire ouverte. Aurea s’est mis à jour tout seul.</p>
       <ul class="hint" style="margin:14px 0 0;padding-left:18px;line-height:1.65">
-        <li><b>Dépense rapide</b> : écris ce que c’est (Loyer, EDF, Lidl…) — la catégorie se choisit toute seule. Le bouton <b>Catégories</b> ouvre toute la liste.</li>
-        <li><b>Remboursement</b> : juste en dessous, si on t’a rendu de l’argent. Ce n’est pas un salaire.</li>
-        <li><b>Relevé CSV</b> : dans Mouvements, tu importes le fichier de la banque et tu coches seulement les lignes utiles. Le solde <b>Maintenant</b> ne bouge pas (c’est déjà à la banque).</li>
-        <li>Page <b>Année</b> : totaux sur 12 mois. Et une alerte si un budget est bientôt atteint.</li>
+        <li><b>Il se souvient des noms.</b> Tu corriges « virement Alysson » en Cadeaux une fois : la prochaine fois, Aurea propose Cadeaux tout seul. Pareil pour Lidl, EDF…</li>
+        <li><b>Récap du mois</b> : Dépensé · Reçu · Forfaits. Tu le vois en changeant de mois en haut (‹ ›). En début de mois, c’est le récap du mois d’avant (bouton OK pour fermer).</li>
       </ul>
       <button class="btn gold block" style="margin-top:18px" data-action="ack-news">C’est noté</button>
     `);
@@ -1107,6 +1132,7 @@ const App = (() => {
     if (payload.alreadyInBank) tx.applied = true;
     data.transactions.push(tx);
     if (tx.applied && !tx.skipBalance) F.applyToBalance(data, tx, 1);
+    if (!payload.alreadyInBank) F.rememberCategory(data, tx.label, tx.categoryId);
     if (!skipSave) Store.save();
     return tx;
   }
@@ -1214,7 +1240,7 @@ const App = (() => {
       return;
     }
     picked.forEach((row) => {
-      const guessed = F.suggestCategory(row.label);
+      const guessed = F.suggestCategory(row.label, db());
       const guessedCat = guessed && db().categories.find((c) => c.id === guessed);
       const categoryId = row.kind === "income"
         ? (guessedCat && guessedCat.kind === "income" ? guessed : "cat-autre-in")
@@ -1893,6 +1919,10 @@ const App = (() => {
       case "import-csv":
         $("#import-csv").click();
         break;
+      case "dismiss-recap":
+        try { localStorage.setItem("aurea.recap.seen", id || ""); } catch (err) {}
+        render();
+        break;
       case "pick-quick-cat":
         quickCatModal();
         break;
@@ -1970,7 +2000,7 @@ const App = (() => {
     }
     if (e.target.closest("[data-form='quick-expense']") && e.target.name === "label") {
       const form = e.target.closest("form");
-      const suggested = F.suggestCategory(e.target.value);
+      const suggested = F.suggestCategory(e.target.value, db());
       if (suggested) {
         const cat = db().categories.find((c) => c.id === suggested);
         if (cat && cat.kind === "expense") {
@@ -1985,7 +2015,7 @@ const App = (() => {
       }
     }
     if (e.target.closest("[data-form='tx']") && e.target.name === "label") {
-      const suggested = F.suggestCategory(e.target.value);
+      const suggested = F.suggestCategory(e.target.value, db());
       if (!suggested) return;
       const form = e.target.form;
       const kind = form.kind.value;
@@ -2069,7 +2099,7 @@ const App = (() => {
       }
       const addMoney = isPlusAmount(obj.amount);
       const cat = data.categories.find((c) => c.id === obj.categoryId);
-      const guessed = F.suggestCategory(obj.label);
+      const guessed = F.suggestCategory(obj.label, data);
       const guessedCat = guessed && data.categories.find((c) => c.id === guessed);
       const categoryId = addMoney
         ? (guessedCat && guessedCat.kind === "income" ? guessed : "cat-autre-in")
@@ -2153,6 +2183,7 @@ const App = (() => {
         });
         old.applied = old.date <= state.today;
         if (old.applied && !old.skipBalance) F.applyToBalance(data, old, 1);
+        F.rememberCategory(data, old.label, old.categoryId);
       } else {
         addTx(obj, true);
       }
