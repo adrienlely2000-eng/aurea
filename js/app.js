@@ -12,12 +12,13 @@ const App = (() => {
     txQ: "",
     txKind: "all",
     txCat: "",
-    txAcc: ""
+    txAcc: "",
+    year: new Date().getFullYear()
   };
 
   const lock = { screen: "home", profileId: "", error: "" };
   const IDLE_MS = 3 * 60 * 1000;
-  const NEWS_ID = "2026-08-28";
+  const NEWS_ID = "2026-08-30";
   const NEWS_KEY = "aurea.news.seen";
   let idleTimer = 0;
   let newsPrompted = false;
@@ -42,6 +43,7 @@ const App = (() => {
   });
 
   let lastDeleted = null;
+  let csvDraft = { rows: [] };
 
   function db() {
     return Store.get();
@@ -168,6 +170,7 @@ const App = (() => {
       .slice(0, 8);
     const insights = F.insights(data, state.period, state.today, accId);
     const afterTone = snap.afterCharges < 0 ? "neg" : "gold";
+    const budgetAlerts = F.budgets(data, state.period, accId).filter((b) => b.ratio >= 0.8);
 
     const dueBanner = due.length ? `
       <div class="card" style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap">
@@ -267,22 +270,24 @@ const App = (() => {
       </form>
       <form data-form="quick-expense" class="card" style="margin-top:16px">
         <p class="kicker">Dépense rapide</p>
-        <p class="hint">Sans signe = on enlève. Mets <b>+</b> devant pour ajouter, ex. +20.</p>
         <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-top:8px">
-          <div class="field" style="flex:1;min-width:120px"><label>Montant</label><input name="amount" inputmode="text" placeholder="12,50 ou +20" required /></div>
-          <div class="field" style="flex:2;min-width:160px"><label>Quoi (optionnel)</label><input name="label" placeholder="Courses, essence…" /></div>
-          <input type="hidden" name="categoryId" value="cat-courses" />
+          <div class="field" style="flex:1;min-width:120px"><label>Montant</label><input name="amount" inputmode="decimal" placeholder="12,50" required /></div>
+          <div class="field" style="flex:2;min-width:160px"><label>Quoi</label><input name="label" placeholder="Loyer, EDF, Carrefour…" /></div>
+          <input type="hidden" name="categoryId" value="cat-autre" />
           <button class="btn gold" type="submit">OK</button>
         </div>
-        <div class="cat-picks" style="margin-top:10px">
-          ${[
-            ["cat-courses", "Courses"],
-            ["cat-transport", "Essence / transport"],
-            ["cat-sorties", "Sorties"],
-            ["cat-restaurant", "Restaurant"],
-            ["cat-forfaits", "Forfait"],
-            ["cat-autre", "Autre"]
-          ].map(([id, name], i) => `<button type="button" data-cat="${id}" class="${i === 0 ? "is-on" : ""}">${esc(name)}</button>`).join("")}
+        <div class="split" style="margin-top:10px;align-items:center">
+          <p class="hint" data-quick-cat><b>· Autre</b><small> · écris ce que c’est, Aurea choisit. Ou ouvre la liste.</small></p>
+          <button type="button" class="btn ghost" data-action="pick-quick-cat">Catégories</button>
+        </div>
+      </form>
+      <form data-form="quick-remb" class="card" style="margin-top:16px">
+        <p class="kicker">Remboursement</p>
+        <p class="hint">On t’a rendu de l’argent. Ça s’ajoute, ce n’est pas un salaire.</p>
+        <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-top:8px">
+          <div class="field" style="flex:1;min-width:120px"><label>Montant</label><input name="amount" inputmode="decimal" placeholder="15" required /></div>
+          <div class="field" style="flex:2;min-width:160px"><label>Quoi (optionnel)</label><input name="label" placeholder="Remboursé par…" /></div>
+          <button class="btn gold" type="submit">OK</button>
         </div>
       </form>
       ${snap.afterCharges < 0 ? `
@@ -293,6 +298,14 @@ const App = (() => {
       <article class="card tight-alert" style="margin-top:16px">
         <p class="kicker">C’est serré</p>
         <p>Après les forfaits, il te restera <b>${esc(F.money(snap.afterCharges))}</b>.</p>
+      </article>` : ""}
+      ${budgetAlerts.length ? `
+      <article class="card tight-alert" style="margin-top:16px">
+        <p class="kicker">${budgetAlerts.some((b) => b.ratio >= 1) ? "Budget dépassé" : "Budget bientôt atteint"}</p>
+        ${budgetAlerts.map((b) => `<p>${esc(b.name)} : <b>${esc(F.money(b.used))}</b> / ${esc(F.money(b.cap))}${
+          b.ratio >= 1 ? " · dépassé de " + esc(F.money(-b.left)) : " · encore " + esc(F.money(b.left))
+        }</p>`).join("")}
+        <button class="btn ghost" style="margin-top:10px" data-view="budget">Voir le budget</button>
       </article>` : ""}
       ${cmp.hasPrev && cmp.spentPrev > 0 ? `
       <article class="card" style="margin-top:16px">
@@ -478,7 +491,10 @@ const App = (() => {
     return `
       <div class="section-title">
         <h2>Mouvements</h2>
-        <button class="btn gold" data-action="quick-add">Ajouter</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn" data-action="import-csv">Relevé CSV</button>
+          <button class="btn gold" data-action="quick-add">Ajouter</button>
+        </div>
       </div>
       <div class="filters">
         <input type="search" id="tx-q" value="${esc(state.txQ)}" placeholder="Rechercher un libellé…" />
@@ -674,6 +690,46 @@ const App = (() => {
     return `<div class="cal">${html}</div><p class="hint">Les cases colorées signalent un prélèvement ou un revenu prévu.</p>`;
   }
 
+  function viewYear() {
+    const data = db();
+    const y = state.year || state.period.start.getFullYear();
+    state.year = y;
+    const summary = F.yearSummary(data, y, focusId());
+    const accName = (F.focusAccount(data) && F.focusAccount(data).name) || "ce compte";
+    return `
+      <div class="section-title">
+        <h2>Année ${esc(y)}</h2>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn" data-action="year-prev">‹ ${esc(y - 1)}</button>
+          <button class="btn" data-action="year-next">${esc(y + 1)} ›</button>
+        </div>
+      </div>
+      <p class="hint">${esc(accName)} · totaux de janvier à décembre, sans changer ton solde réel.</p>
+      <div class="grid grid-3">
+        <article class="card"><p class="kicker">Dépensé</p><p class="hero-num" style="font-size:1.8rem">${esc(F.money(summary.spent))}</p></article>
+        <article class="card"><p class="kicker">Reçu</p><p class="hero-num pos" style="font-size:1.8rem">${esc(F.money(summary.earned))}</p></article>
+        <article class="card"><p class="kicker">Épargne notée</p><p class="hero-num gold" style="font-size:1.8rem">${esc(F.money(summary.epargne))}</p><p class="hint">Mouvements catégorie Épargne</p></article>
+      </div>
+      <div class="grid grid-2" style="margin-top:16px">
+        <article class="card metal">
+          <p class="kicker">Forfaits sur 12 mois</p>
+          <p class="hero-num">${esc(F.money(summary.forfaitsYear))}</p>
+          <p class="hint">${summary.forfaitsCount} forfait${summary.forfaitsCount > 1 ? "s" : ""} · ${esc(F.money(summary.forfaitsYear / 12))} / mois</p>
+        </article>
+        <article class="card">
+          <p class="kicker">Dettes sur 12 mois</p>
+          <p class="hero-num">${esc(F.money(summary.dettesYear))}</p>
+          <p class="hint">${summary.dettesCount ? esc(F.money(summary.dettesLeft)) + " encore à rembourser · " + esc(F.money(summary.dettesYear / 12)) + " / mois" : "Aucune dette en cours"}</p>
+        </article>
+      </div>
+      <article class="card" style="margin-top:16px">
+        <p class="kicker">Mois par mois</p>
+        ${Charts.bars(summary.months)}
+        <p class="hint">Terracotta : dépenses · bleu : revenus</p>
+      </article>
+    `;
+  }
+
   function viewGoals() {
     const data = db();
     return `
@@ -740,10 +796,11 @@ const App = (() => {
       </article>
       <div class="section-title"><h2>Données</h2></div>
       <article class="card">
-        <p class="hint">Tout est enregistré sur Neon (Postgres) quand le serveur tourne. Exportez une copie de temps en temps si vous voulez un fichier.</p>
+        <p class="hint">Tout est enregistré sur Neon quand le serveur tourne. Le relevé CSV vient de ta banque : tu coches seulement les lignes qui comptent, le solde réel ne bouge pas.</p>
         <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:12px">
           <button class="btn" data-action="export-json">Exporter</button>
-          <button class="btn" data-action="import-json">Importer</button>
+          <button class="btn" data-action="import-json">Importer une sauvegarde</button>
+          <button class="btn" data-action="import-csv">Importer un relevé CSV</button>
           <button class="btn" data-action="load-demo">Charger un exemple</button>
           <button class="btn warn" data-action="reset-data">Tout effacer</button>
         </div>
@@ -756,6 +813,7 @@ const App = (() => {
     accounts: viewAccounts,
     transactions: viewTransactions,
     recurrings: viewRecurrings,
+    year: viewYear,
     budget: viewBudget,
     forecast: viewForecast,
     goals: viewGoals,
@@ -763,7 +821,7 @@ const App = (() => {
   };
 
   const params = new URLSearchParams(location.search);
-  if (params.get("view") && ["dashboard", "accounts", "transactions", "recurrings", "budget", "forecast", "goals", "settings"].includes(params.get("view"))) {
+  if (params.get("view") && ["dashboard", "accounts", "transactions", "recurrings", "year", "budget", "forecast", "goals", "settings"].includes(params.get("view"))) {
     state.view = params.get("view");
   }
 
@@ -804,12 +862,13 @@ const App = (() => {
     newsPrompted = true;
     openModal(`
       <div class="split"><p class="kicker">Nouveautés</p><button class="icon-btn" data-action="ack-news">✕</button></div>
-      <p class="hero-num" style="font-size:1.55rem">Petite mise à jour</p>
-      <p class="hint">Au lancement, Aurea se met à jour tout seul. Plus besoin de clé USB.</p>
+      <p class="hero-num" style="font-size:1.55rem">Nouvelle mise à jour</p>
+      <p class="hint">Comme d’habitude : laisse la fenêtre noire ouverte. Aurea s’est mis à jour tout seul.</p>
       <ul class="hint" style="margin:14px 0 0;padding-left:18px;line-height:1.65">
-        <li><b>Dépense rapide</b> : l’argent ne bouge pas tant que tu n’as pas cliqué pour pointer (quand c’est passé à la banque).</li>
-        <li>Mets <b>+</b> devant le montant pour <b>ajouter</b> de l’argent, ex. +20.</li>
-        <li>Laisse la fenêtre noire ouverte tant que tu utilises le site.</li>
+        <li><b>Dépense rapide</b> : écris ce que c’est (Loyer, EDF, Lidl…) — la catégorie se choisit toute seule. Le bouton <b>Catégories</b> ouvre toute la liste.</li>
+        <li><b>Remboursement</b> : juste en dessous, si on t’a rendu de l’argent. Ce n’est pas un salaire.</li>
+        <li><b>Relevé CSV</b> : dans Mouvements, tu importes le fichier de la banque et tu coches seulement les lignes utiles. Le solde <b>Maintenant</b> ne bouge pas (c’est déjà à la banque).</li>
+        <li>Page <b>Année</b> : totaux sur 12 mois. Et une alerte si un budget est bientôt atteint.</li>
       </ul>
       <button class="btn gold block" style="margin-top:18px" data-action="ack-news">C’est noté</button>
     `);
@@ -1035,7 +1094,9 @@ const App = (() => {
       toAccountId: payload.toAccountId || "",
       categoryId: payload.categoryId || "",
       note: payload.note || "",
-      recurringId: payload.recurringId || ""
+      recurringId: payload.recurringId || "",
+      importKey: payload.importKey || "",
+      skipBalance: !!payload.alreadyInBank
     };
     if (tx.kind === "expense" && !tx.toAccountId) {
       const dest = F.accountFromLabel(data, tx.label, tx.accountId);
@@ -1043,8 +1104,9 @@ const App = (() => {
     }
     const future = tx.date > state.today;
     tx.applied = payload.waitPointer ? false : !future;
+    if (payload.alreadyInBank) tx.applied = true;
     data.transactions.push(tx);
-    if (tx.applied) F.applyToBalance(data, tx, 1);
+    if (tx.applied && !tx.skipBalance) F.applyToBalance(data, tx, 1);
     if (!skipSave) Store.save();
     return tx;
   }
@@ -1054,13 +1116,13 @@ const App = (() => {
     const idx = data.transactions.findIndex((t) => t.id === id);
     if (idx < 0) return;
     const tx = data.transactions[idx];
-    if (tx.applied !== false) F.applyToBalance(data, tx, -1);
+    if (tx.applied !== false && !tx.skipBalance) F.applyToBalance(data, tx, -1);
     data.transactions.splice(idx, 1);
     Store.save();
     lastDeleted = tx;
     toast("Mouvement supprimé", () => {
       data.transactions.push(tx);
-      if (tx.applied !== false) F.applyToBalance(data, tx, 1);
+      if (tx.applied !== false && !tx.skipBalance) F.applyToBalance(data, tx, 1);
       Store.save();
     });
   }
@@ -1077,6 +1139,102 @@ const App = (() => {
     tx.applied = true;
     Store.save();
     toast((tx.label || "Dépense") + " pointé — solde réel mis à jour");
+  }
+
+  function markCsvDuplicates(rows) {
+    const accId = focusId();
+    const known = new Set(
+      db().transactions
+        .filter((t) => !accId || t.accountId === accId)
+        .map((t) => t.importKey || F.csvFingerprint(t.date, t.amount, t.label))
+    );
+    rows.forEach((row) => {
+      row.dup = known.has(row.key);
+      if (row.dup || row.noise) row.checked = false;
+    });
+    return rows;
+  }
+
+  function paintQuickCat(form, auto) {
+    if (!form) return;
+    const cat = F.categoryById(db(), form.categoryId.value);
+    const slot = form.querySelector("[data-quick-cat]");
+    if (!slot) return;
+    slot.innerHTML = `<b>${esc(cat.icon)} ${esc(cat.name)}</b><small> · ${auto ? "choisi d’après le texte" : "choisi dans la liste"}</small>`;
+  }
+
+  function quickCatModal() {
+    const form = document.querySelector("[data-form='quick-expense']");
+    const current = form && form.categoryId ? form.categoryId.value : "cat-autre";
+    const cats = db().categories.filter((c) => c.kind === "expense");
+    openModal(`
+      <div class="split"><p class="kicker">Catégorie</p><button class="icon-btn" data-action="close-modal">✕</button></div>
+      <p class="hint">Toutes les catégories. Tu peux aussi juste écrire « loyer » ou « EDF » : Aurea le devine.</p>
+      <div class="cat-picks" style="margin-top:12px">
+        ${cats.map((c) => `<button type="button" data-action="set-quick-cat" data-id="${esc(c.id)}" class="${c.id === current ? "is-on" : ""}">${esc(c.icon)} ${esc(c.name)}</button>`).join("")}
+      </div>
+    `);
+  }
+
+  function csvModal() {
+    const rows = csvDraft.rows || [];
+    const n = rows.filter((r) => r.checked).length;
+    const total = rows.filter((r) => r.checked).reduce((s, r) => s + (Number(r.amount) || 0), 0);
+    openModal(`
+      <div class="split"><p class="kicker">Relevé CSV</p><button class="icon-btn" data-action="close-modal">✕</button></div>
+      <p class="hint">Coche seulement ce qui compte pour toi. Les soldes, totaux et lignes déjà notées sont décochés.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;margin:12px 0">
+        <button class="btn ghost" type="button" data-action="csv-all">Tout cocher</button>
+        <button class="btn ghost" type="button" data-action="csv-none">Tout décocher</button>
+        <button class="btn ghost" type="button" data-action="csv-out">Que les dépenses</button>
+        <button class="btn ghost" type="button" data-action="csv-month">Que ce mois</button>
+      </div>
+      <p class="hint">${n} ligne${n > 1 ? "s" : ""} choisie${n > 1 ? "s" : ""} · ${esc(F.money(total))}</p>
+      <div class="list csv-pick" style="max-height:42vh;overflow:auto;margin-top:8px">
+        ${rows.map((row, i) => `
+          <label class="row" data-action="csv-toggle" data-i="${i}" style="cursor:pointer;${row.checked ? "" : "opacity:.55"}">
+            <input type="checkbox" ${row.checked ? "checked" : ""} style="width:18px;height:18px;flex-shrink:0;pointer-events:none" />
+            <span><b>${esc(row.label)}</b><small>${esc(F.formatDate(row.date))}${row.dup ? " · déjà noté" : ""}${row.noise ? " · souvent inutile" : ""}</small></span>
+            <span class="amt ${row.kind === "income" ? "in" : "out"}">${row.kind === "income" ? "+" : "−"} ${esc(F.money(row.amount))}</span>
+          </label>`).join("")}
+      </div>
+      <button class="btn gold block" type="button" style="margin-top:16px" data-action="csv-import" ${n ? "" : "disabled"}>Importer la sélection</button>
+    `);
+  }
+
+  function importCsvSelection() {
+    const acc = F.focusAccount(db());
+    if (!acc) {
+      toast("Ajoute un compte d’abord");
+      return;
+    }
+    const picked = (csvDraft.rows || []).filter((r) => r.checked);
+    if (!picked.length) {
+      toast("Coche au moins une ligne");
+      return;
+    }
+    picked.forEach((row) => {
+      const guessed = F.suggestCategory(row.label);
+      const guessedCat = guessed && db().categories.find((c) => c.id === guessed);
+      const categoryId = row.kind === "income"
+        ? (guessedCat && guessedCat.kind === "income" ? guessed : "cat-autre-in")
+        : (guessed || "cat-autre");
+      addTx({
+        kind: row.kind,
+        amount: row.amount,
+        label: row.label,
+        date: row.date,
+        accountId: acc.id,
+        categoryId,
+        importKey: row.key,
+        alreadyInBank: true
+      }, true);
+    });
+    Store.save();
+    csvDraft.rows = [];
+    closeModal();
+    render();
+    toast(picked.length + " ligne" + (picked.length > 1 ? "s" : "") + " importée" + (picked.length > 1 ? "s" : "") + " — le solde réel n’a pas bougé");
   }
 
   function payAmountModal(rec) {
@@ -1732,6 +1890,55 @@ const App = (() => {
       case "import-json":
         $("#import-file").click();
         break;
+      case "import-csv":
+        $("#import-csv").click();
+        break;
+      case "pick-quick-cat":
+        quickCatModal();
+        break;
+      case "set-quick-cat": {
+        const form = document.querySelector("[data-form='quick-expense']");
+        if (form && form.categoryId) {
+          form.categoryId.value = id;
+          paintQuickCat(form, false);
+        }
+        closeModal();
+        break;
+      }
+      case "csv-toggle": {
+        e.preventDefault();
+        const i = Number(act.dataset.i);
+        if (csvDraft.rows[i]) csvDraft.rows[i].checked = !csvDraft.rows[i].checked;
+        csvModal();
+        break;
+      }
+      case "csv-all":
+        csvDraft.rows.forEach((r) => { r.checked = !r.dup && !r.noise; });
+        csvModal();
+        break;
+      case "csv-none":
+        csvDraft.rows.forEach((r) => { r.checked = false; });
+        csvModal();
+        break;
+      case "csv-out":
+        csvDraft.rows.forEach((r) => { r.checked = r.kind === "expense" && !r.dup && !r.noise; });
+        csvModal();
+        break;
+      case "csv-month":
+        csvDraft.rows.forEach((r) => { r.checked = F.inPeriod(r.date, state.period) && !r.dup && !r.noise; });
+        csvModal();
+        break;
+      case "csv-import":
+        importCsvSelection();
+        break;
+      case "year-prev":
+        state.year = (state.year || state.period.start.getFullYear()) - 1;
+        render();
+        break;
+      case "year-next":
+        state.year = (state.year || state.period.start.getFullYear()) + 1;
+        render();
+        break;
       case "load-demo":
         loadDemo();
         break;
@@ -1759,6 +1966,22 @@ const App = (() => {
       if (again) {
         again.focus();
         again.setSelectionRange(keep, keep);
+      }
+    }
+    if (e.target.closest("[data-form='quick-expense']") && e.target.name === "label") {
+      const form = e.target.closest("form");
+      const suggested = F.suggestCategory(e.target.value);
+      if (suggested) {
+        const cat = db().categories.find((c) => c.id === suggested);
+        if (cat && cat.kind === "expense") {
+          form.categoryId.value = suggested;
+          paintQuickCat(form, true);
+        }
+        return;
+      }
+      if (String(e.target.value || "").trim()) {
+        form.categoryId.value = "cat-autre";
+        paintQuickCat(form, true);
       }
     }
     if (e.target.closest("[data-form='tx']") && e.target.name === "label") {
@@ -1792,6 +2015,24 @@ const App = (() => {
         render();
         toast("Import terminé");
       }).catch(() => toast("Fichier illisible"));
+      e.target.value = "";
+    }
+    if (e.target.id === "import-csv" && e.target.files[0]) {
+      const file = e.target.files[0];
+      file.arrayBuffer().then((buf) => {
+        const utf8 = new TextDecoder("utf-8").decode(buf);
+        const win = new TextDecoder("windows-1252").decode(buf);
+        const score = (s) => (s.match(/[éèêàùçôîÉÈÀ]/g) || []).length - (s.match(/\uFFFD/g) || []).length;
+        const text = score(win) > score(utf8) ? win : utf8;
+        const parsed = F.parseBankCsv(text);
+        if (parsed.error) {
+          toast(parsed.error);
+          return;
+        }
+        csvDraft.rows = markCsvDuplicates(parsed.rows);
+        csvModal();
+      }).catch(() => toast("Fichier illisible"));
+      e.target.value = "";
     }
   });
 
@@ -1872,10 +2113,33 @@ const App = (() => {
       toast("Salaire noté");
       render();
     }
+    if (type === "quick-remb") {
+      const acc = F.focusAccount(data);
+      if (!acc) {
+        toast("Ajoute un compte d’abord");
+        return;
+      }
+      const amount = parseAmount(obj.amount);
+      if (!amount) {
+        toast("Indique le montant remboursé");
+        return;
+      }
+      addTx({
+        kind: "income",
+        amount,
+        label: (obj.label || "").trim() || "Remboursement",
+        date: state.today,
+        accountId: acc.id,
+        categoryId: "cat-remb",
+        waitPointer: true
+      });
+      toast("Remboursement noté — clique dessus pour pointer quand c’est arrivé à la banque");
+      render();
+    }
     if (type === "tx") {
       if (form.dataset.id) {
         const old = data.transactions.find((t) => t.id === form.dataset.id);
-        if (old && old.applied !== false) F.applyToBalance(data, old, -1);
+        if (old && old.applied !== false && !old.skipBalance) F.applyToBalance(data, old, -1);
         const dest = obj.kind === "expense" ? F.accountFromLabel(data, obj.label, obj.accountId) : null;
         Object.assign(old, {
           kind: obj.kind,
@@ -1888,7 +2152,7 @@ const App = (() => {
           note: obj.note || ""
         });
         old.applied = old.date <= state.today;
-        if (old.applied) F.applyToBalance(data, old, 1);
+        if (old.applied && !old.skipBalance) F.applyToBalance(data, old, 1);
       } else {
         addTx(obj, true);
       }

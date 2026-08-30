@@ -763,23 +763,192 @@ const Finance = (() => {
   }
 
   function suggestCategory(label) {
-    const s = String(label || "").toLowerCase();
+    const s = foldText(label);
+    if (!s || s.length < 2) return null;
     const rules = [
-      ["cat-logement", /loyer|charges? loc|syndic|appartement/],
-      ["cat-courses", /carrefour|auchan|leclerc|lidl|intermarch|monoprix|courses|superette|franprix|casino/],
-      ["cat-transport", /sncf|uber|essence|totalenergies|navigo|essence|parking|carburant|ratp/],
-      ["cat-forfaits", /orange|sfr|free|bouygues|netflix|spotify|disney|amazon prime|internet|forfait|youtube/],
-      ["cat-energie", /edf|engie|électricité|electricite|gaz|enedis/],
-      ["cat-assurances", /assurance|maif|macif|axa|allianz|gmf/],
-      ["cat-sante", /pharmacie|mutuelle|médecin|medecin|doctolib|dentiste/],
-      ["cat-restaurant", /restaurant|mcdonald|burger|kebab|uber eats|deliveroo/],
-      ["cat-sorties", /café|cafe|bar |sortie/],
-      ["cat-loisirs", /cinema|cinéma|steam|playstation|concert|fnac/],
-      ["cat-shopping", /zara|shein|amazon|ikea|decathlon|hm /],
-      ["cat-salaire", /salaire|paie|payroll|virement employ/]
+      ["cat-salaire", /salaire|paie|payroll|virement employ|fiche de paie/],
+      ["cat-logement", /loyer|logement|charges? loc|syndic|appartement|foncier|habitation|caution|agence immo|orpi|century 21|gl \b|gardien|digicode|brico depot|leroy merlin|castorama|ikea|amenagement|travaux/],
+      ["cat-energie", /edf|engie|electricite|ekwateur|ohm energie|totalenergies elec|gaz|enedis|grdf|veolia|suez eau|saur|chauffage|fioul|compteur/],
+      ["cat-assurances", /assurance|mutuelle sante|maif|macif|axa|allianz|gmf|maaf|matmut|groupama|mma |credit agricole assu/],
+      ["cat-sante", /pharmacie|mutuelle|medecin|doctolib|dentiste|hopital|clinique|opticien|sante|kine|kinesitherapeute|ordonnance|ameli|cpam|secu|laboratoire|analyse|radio |irm |vaccin/],
+      ["cat-forfaits", /orange|sfr|free mobile|free.fr|bouygues|netflix|spotify|disney\+|disney plus|amazon prime|canal\+|prime video|internet|box fibre|forfait|youtube premium|abo |abonnement|apple.com|microsoft 365|icloud|deezer|amazon musique/],
+      ["cat-restaurant", /restaurant|resto |mcdonald|mcdo|burger king|kfc|quick |kebab|uber eats|deliveroo|just eat|pizza|brasserie|sushi|pokewa|five guys|starbucks|paul |boulangerie-resto/],
+      ["cat-courses", /carrefour|auchan|leclerc|e\.leclerc|lidl|aldi|intermarch|monoprix|courses|superette|franprix|casino|picard|grand frais|biocoop|naturalia|boulangerie|boucherie|fromager|primeur|marche |drive |chronodrive|carrefour city|carrefour market|u express|systeme u|hyper u|super u|cora |match |netto /],
+      ["cat-transport", /sncf|ratp|navigo|uber|bolt |kapten|essence|carburant|gasoil|gazole|station.service|totalenergies|total access|total |shell |bp |esso |parking|peage|autoroute|controle technique|ct auto|carte grise|norauto|feu vert|oscaro|velib|trottinette|blablacar/],
+      ["cat-voyage", /voyage|vacances|hotel|airbnb|booking|expedia|avion|vol |billets? d avion|air france|easyjet|ryanair|transavia|ouigo|inoui|trainline|camp(ing)? |gite /],
+      ["cat-cadeaux", /cadeau|anniversaire|noel|fete des|fleurs|fleuriste|bijou|sephora|yves rocher|nature et decouvertes/],
+      ["cat-animaux", /veterinaire|croquette|animalerie|animaux|animalis|maxi zoo|tom&co|royal canin|chat |chien |pension animale/],
+      ["cat-loisirs", /cinema|pathe|ugc |steam|playstation|xbox|nintendo|concert|fnac|cultura|loisir|sport|decathlon|basic.fit|fitness park|gymnase|piscine|bowling|billet(s)? spectacle/],
+      ["cat-sorties", /cafe |coffee |bar |pub |sortie|discotheque|boite de nuit|afterwork/],
+      ["cat-epargne", /epargne|livret|livret a|ldds| pel|pel |assurance vie|plan epargne/],
+      ["cat-dettes", /credit conso|credit revolving|mensualite|cofidis|sofinco|floa|cetelem|oney |paiement [0-9]+x|en [0-9]+ fois/],
+      ["cat-autre", /\bvir(ement)?\b|vir sepa|prelevement|prlv |paypal|lydia|lydia |wise |revolut|western union/]
     ];
     for (const [id, re] of rules) if (re.test(s)) return id;
     return null;
+  }
+
+  function parseFrAmount(raw) {
+    let s = String(raw || "").replace(/\u00a0/g, " ").replace(/\s/g, "").replace(/€/gi, "");
+    if (!s || s === "-") return null;
+    if (s.includes(",") && s.includes(".")) {
+      if (s.lastIndexOf(",") > s.lastIndexOf(".")) s = s.replace(/\./g, "").replace(",", ".");
+      else s = s.replace(/,/g, "");
+    } else if (s.includes(",")) {
+      s = s.replace(",", ".");
+    }
+    const n = Number(s);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function parseFrDate(raw) {
+    const s = String(raw || "").trim();
+    let m = s.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})/);
+    if (m) {
+      let y = Number(m[3]);
+      if (y < 100) y += 2000;
+      const month = Number(m[2]);
+      const day = Number(m[1]);
+      const d = new Date(y, month - 1, day);
+      if (d.getFullYear() === y && d.getMonth() === month - 1 && d.getDate() === day) return toISO(d);
+    }
+    m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (m) return m[1] + "-" + m[2] + "-" + m[3];
+    return "";
+  }
+
+  function splitCsvLine(line, sep) {
+    const out = [];
+    let cur = "";
+    let quoted = false;
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (c === '"') {
+        quoted = !quoted;
+        continue;
+      }
+      if (!quoted && c === sep) {
+        out.push(cur.trim());
+        cur = "";
+        continue;
+      }
+      cur += c;
+    }
+    out.push(cur.trim());
+    return out;
+  }
+
+  function isCsvNoise(label) {
+    const s = foldText(label);
+    return /ancien solde|nouveau solde|solde en euro|solde comptable|solde au |total des|totaux|iban|bic |titulaire|releve n|extrait n|page \d|^solde$|^date$/.test(s);
+  }
+
+  function csvFingerprint(date, amount, label) {
+    return date + "|" + (Number(amount) || 0).toFixed(2) + "|" + foldText(label).replace(/\s+/g, " ").slice(0, 80);
+  }
+
+  function findCsvCol(headers, names) {
+    const folded = headers.map((h) => foldText(h).replace(/['"]/g, ""));
+    for (let n = 0; n < names.length; n++) {
+      const want = names[n];
+      const i = folded.findIndex((h) => h === want || h.indexOf(want) !== -1);
+      if (i >= 0) return i;
+    }
+    return -1;
+  }
+
+  function parseBankCsv(text) {
+    const raw = String(text || "").replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    const lines = raw.split("\n").filter((l) => l.trim());
+    if (!lines.length) return { error: "Fichier vide", rows: [] };
+    const first = lines[0];
+    const sep = (first.split(";").length >= first.split(",").length) ? ";" : ",";
+    let headerIdx = 0;
+    for (let i = 0; i < Math.min(lines.length, 12); i++) {
+      const f = foldText(lines[i]);
+      if (/libelle|intitule|montant|debit|date/.test(f)) {
+        headerIdx = i;
+        break;
+      }
+    }
+    const headers = splitCsvLine(lines[headerIdx], sep);
+    let iDate = findCsvCol(headers, ["date operation", "date d operation", "date de l operation", "date comptable", "date"]);
+    const iLabel = findCsvCol(headers, ["libelle", "intitule", "designation", "description", "label"]);
+    const iAmount = findCsvCol(headers, ["montant", "amount", "somme"]);
+    const iDebit = findCsvCol(headers, ["debit"]);
+    const iCredit = findCsvCol(headers, ["credit"]);
+    if (iDate < 0) iDate = 0;
+    const rows = [];
+    for (let i = headerIdx + 1; i < lines.length; i++) {
+      const cols = splitCsvLine(lines[i], sep);
+      if (cols.every((c) => !c)) continue;
+      const date = parseFrDate(cols[iDate] || "");
+      const label = String(cols[iLabel >= 0 ? iLabel : 1] || "").replace(/\s+/g, " ").trim();
+      let signed = null;
+      if (iAmount >= 0) signed = parseFrAmount(cols[iAmount]);
+      else {
+        const debit = iDebit >= 0 ? parseFrAmount(cols[iDebit]) : null;
+        const credit = iCredit >= 0 ? parseFrAmount(cols[iCredit]) : null;
+        if (credit && credit !== 0) signed = Math.abs(credit);
+        else if (debit && debit !== 0) signed = -Math.abs(debit);
+      }
+      if (!date || signed == null || signed === 0) continue;
+      const amount = Math.abs(signed);
+      const kind = signed < 0 ? "expense" : "income";
+      const noise = isCsvNoise(label);
+      rows.push({
+        date,
+        label: label || (kind === "income" ? "Entrée" : "Sortie"),
+        amount,
+        kind,
+        noise,
+        checked: !noise,
+        key: csvFingerprint(date, amount, label)
+      });
+    }
+    if (!rows.length) return { error: "Aucune opération lisible dans ce fichier", rows: [] };
+    return { error: "", rows };
+  }
+
+  function yearSummary(data, year, accountId) {
+    const y = Number(year) || new Date().getFullYear();
+    const months = [];
+    let spent = 0;
+    let earned = 0;
+    let epargne = 0;
+    for (let m = 0; m < 12; m++) {
+      const start = new Date(y, m, 1);
+      const end = new Date(y, m + 1, 0);
+      const period = { start, end, startISO: toISO(start), endISO: toISO(end) };
+      const txs = txsInPeriod(data, period, accountId ? { accountId } : {}).filter((t) => t.applied !== false);
+      const s = sumByKind(txs, "expense");
+      const e = sumByKind(txs, "income");
+      const sav = txs
+        .filter((t) => t.kind === "expense" && t.categoryId === "cat-epargne")
+        .reduce((a, t) => a + (Number(t.amount) || 0), 0);
+      months.push({
+        label: start.toLocaleDateString("fr-FR", { month: "short" }).replace(".", ""),
+        spent: s,
+        earned: e
+      });
+      spent += s;
+      earned += e;
+      epargne += sav;
+    }
+    const forfaits = (data.recurrings || []).filter((r) => r.active !== false && r.kind !== "income" && r.mode !== "debt" && (!accountId || r.accountId === accountId));
+    const dettes = (data.recurrings || []).filter((r) => isDebt(r) && r.active !== false && (!accountId || r.accountId === accountId));
+    return {
+      year: y,
+      months,
+      spent,
+      earned,
+      epargne,
+      forfaitsYear: forfaits.reduce((s, r) => s + monthlyEquivalent(r) * 12, 0),
+      dettesYear: dettes.reduce((s, r) => s + monthlyEquivalent(r) * 12, 0),
+      dettesLeft: dettes.reduce((s, r) => s + remainingDebt(r), 0),
+      forfaitsCount: forfaits.length,
+      dettesCount: dettes.length
+    };
   }
 
   return {
@@ -828,6 +997,9 @@ const Finance = (() => {
     monthCompare,
     forecast,
     insights,
-    suggestCategory
+    suggestCategory,
+    parseBankCsv,
+    yearSummary,
+    csvFingerprint
   };
 })();
