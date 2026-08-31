@@ -291,7 +291,7 @@ const App = (() => {
       <form data-form="quick-balance" class="card" style="margin-top:16px;display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end">
         <div class="field" style="flex:1;min-width:180px">
           <label>Solde réel du compte (comme sur l’appli banque)</label>
-          <input name="balance" inputmode="decimal" value="${esc(snap.now)}" />
+          <input name="balance" inputmode="decimal" value="${esc((Number(snap.now) || 0).toFixed(2).replace(".", ","))}" />
         </div>
         <button class="btn gold" type="submit">Actualiser</button>
       </form>
@@ -632,18 +632,18 @@ const App = (() => {
         <h2>Budget du mois</h2>
         <button class="btn gold" data-action="edit-budgets">Fixer les plafonds</button>
       </div>
-      <p class="hint">Les jauges se remplissent toutes seules à partir de vos mouvements.</p>
+      <p class="hint">Clique une catégorie pour voir le détail du mois. Les jauges se remplissent toutes seules.</p>
       <div class="grid">
         ${
           rows.length
             ? rows.map((b) => {
                 const pct = Math.min(100, Math.round(b.ratio * 100));
                 const cls = b.ratio >= 1 ? "warn" : b.ratio >= 0.8 ? "" : "ok";
-                return `<article class="card">
+                return `<button type="button" class="card" data-action="budget-cat" data-id="${esc(b.id)}" style="text-align:left;width:100%">
                   <div class="split"><b>${esc(b.icon)} ${esc(b.name)}</b><span>${esc(F.money(b.used))} / ${esc(F.money(b.cap))}</span></div>
                   <div class="progress ${cls}" style="margin-top:10px"><span style="width:${pct}%"></span></div>
                   <p class="hint">${b.left >= 0 ? esc(F.money(b.left)) + " encore disponibles" : "dépassé de " + esc(F.money(-b.left))}</p>
-                </article>`;
+                </button>`;
               }).join("")
             : empty("Aucun plafond pour l’instant. Fixez un budget courses, sorties, etc.", "Fixer les plafonds", "edit-budgets")
         }
@@ -652,11 +652,11 @@ const App = (() => {
       <article class="card">
         <div class="list">
           ${cats.filter((c) => !Number(c.budget) && spentMap[c.id]).map((c) => `
-            <div class="row">
+            <button type="button" class="row" data-action="budget-cat" data-id="${esc(c.id)}">
               <span class="glyph">${esc(c.icon)}</span>
-              <span><b>${esc(c.name)}</b><small>pas de budget</small></span>
+              <span><b>${esc(c.name)}</b><small>pas de budget · voir le détail</small></span>
               <span class="amt out">${esc(F.money(spentMap[c.id]))}</span>
-            </div>`).join("") || `<p class="hint">Rien d’autre dépensé hors budget.</p>`}
+            </button>`).join("") || `<p class="hint">Rien d’autre dépensé hors budget.</p>`}
         </div>
       </article>
     `;
@@ -1077,6 +1077,22 @@ const App = (() => {
         </div>
         <button class="btn gold" style="margin-top:16px" type="submit">Enregistrer</button>
       </form>
+    `);
+  }
+
+  function budgetCatModal(catId) {
+    const data = db();
+    const cat = F.categoryById(data, catId);
+    const txs = F.txsInPeriod(data, state.period, {
+      categoryId: catId,
+      accountId: focusId() || undefined
+    }).filter((t) => t.kind === "expense").sort((a, b) => String(b.date).localeCompare(String(a.date)));
+    const total = F.sumByKind(txs, "expense");
+    openModal(`
+      <div class="split"><p class="kicker">${esc(cat.icon)} ${esc(cat.name)}</p><button class="icon-btn" data-action="close-modal">✕</button></div>
+      <p class="hero-num" style="font-size:1.6rem">${esc(F.money(total))}</p>
+      <p class="hint">${esc(F.monthLabel(state.period))} · ${txs.length} dépense${txs.length > 1 ? "s" : ""} · clique une ligne pour modifier</p>
+      ${txs.length ? txListGrouped(txs) : "<p class=\"hint\" style=\"margin-top:12px\">Aucune dépense dans cette catégorie ce mois-ci.</p>"}
     `);
   }
 
@@ -1924,6 +1940,9 @@ const App = (() => {
       case "edit-budgets":
         budgetsForm();
         break;
+      case "budget-cat":
+        budgetCatModal(id);
+        break;
       case "export-json": {
         const blob = new Blob([Store.exportJson()], { type: "application/json" });
         const a = document.createElement("a");
@@ -2100,7 +2119,7 @@ const App = (() => {
     const obj = saveFromForm(form);
     if (type === "quick-balance") {
       const acc = F.focusAccount(data);
-      if (acc) acc.balance = parseAmount(obj.balance);
+      if (acc) acc.balance = Math.round(parseAmount(obj.balance) * 100) / 100;
       Store.save();
       toast("Solde mis à jour");
       render();
