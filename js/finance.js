@@ -340,7 +340,12 @@ const Finance = (() => {
 
   function chargedInPeriod(data, recId, period) {
     if (!recId) return false;
-    return (data.transactions || []).some((t) => t.recurringId === recId && t.date && inPeriod(t.date, period));
+    return (data.transactions || []).some((t) => {
+      if (t.recurringId !== recId) return false;
+      if (t.date && inPeriod(t.date, period)) return true;
+      if (t.coversDate && inPeriod(t.coversDate, period)) return true;
+      return false;
+    });
   }
 
   function remainingCharges(data, period, today = todayISO(), accountId) {
@@ -1027,6 +1032,7 @@ const Finance = (() => {
     accountFromLabel,
     remainingCharges,
     remainingIncome,
+    chargedInPeriod,
     plannedMovements,
     settleDue,
     settleDebts,

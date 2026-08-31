@@ -18,7 +18,7 @@ const App = (() => {
 
   const lock = { screen: "home", profileId: "", error: "" };
   const IDLE_MS = 3 * 60 * 1000;
-  const NEWS_ID = "2026-08-30-2";
+  const NEWS_ID = "2026-08-31";
   const NEWS_KEY = "aurea.news.seen";
   let idleTimer = 0;
   let newsPrompted = false;
@@ -894,6 +894,7 @@ const App = (() => {
       <ul class="hint" style="margin:14px 0 0;padding-left:18px;line-height:1.65">
         <li><b>Il se souvient des noms.</b> Tu corriges « virement Alysson » en Cadeaux une fois : la prochaine fois, Aurea propose Cadeaux tout seul. Pareil pour Lidl, EDF…</li>
         <li><b>Récap du mois</b> : Dépensé · Reçu · Forfaits. Tu le vois en changeant de mois en haut (‹ ›). En début de mois, c’est le récap du mois d’avant (bouton OK pour fermer).</li>
+        <li><b>Pointer un forfait</b> : si le mois en cours n’est pas fini et que tu vas dans un autre mois (ex. septembre) pour cliquer Orange, le montant va dans <b>le mois actuel</b> et disparaît de septembre.</li>
       </ul>
       <button class="btn gold block" style="margin-top:18px" data-action="ack-news">C’est noté</button>
     `);
@@ -1121,7 +1122,8 @@ const App = (() => {
       note: payload.note || "",
       recurringId: payload.recurringId || "",
       importKey: payload.importKey || "",
-      skipBalance: !!payload.alreadyInBank
+      skipBalance: !!payload.alreadyInBank,
+      coversDate: payload.coversDate || ""
     };
     if (tx.kind === "expense" && !tx.toAccountId) {
       const dest = F.accountFromLabel(data, tx.label, tx.accountId);
@@ -1291,10 +1293,12 @@ const App = (() => {
     const data = db();
     const rec = data.recurrings.find((r) => r.id === id);
     if (!rec) return;
-    const period = state.period || F.periodOf(state.today, data.settings.monthStartDay || 1);
-    const already = data.transactions.some((t) => t.recurringId === rec.id && t.date && F.inPeriod(t.date, period));
-    if (already) {
-      toast("Déjà pointé ce mois-ci");
+    const day = data.settings.monthStartDay || 1;
+    const current = F.periodOf(state.today, day);
+    const viewed = state.period || current;
+    const dueISO = F.dueDateInPeriod(rec, viewed);
+    if (F.chargedInPeriod(data, rec.id, viewed)) {
+      toast("Déjà pointé pour ce mois-là");
       return "skip";
     }
     if (amountOverride == null && isVariableRec(rec)) {
@@ -1303,11 +1307,18 @@ const App = (() => {
     }
     payingNow.add(id);
     const amount = amountOverride == null ? rec.amount : amountOverride;
+    const currentOpen = F.inPeriod(state.today, current);
+    const viewedFuture = viewed.startISO > current.startISO;
+    let date = state.today;
+    if (viewed.endISO < state.today) date = dueISO || state.today;
+    else if (viewedFuture && currentOpen) date = state.today;
+    else if (rec.nextDate && rec.nextDate < state.today) date = rec.nextDate;
     addTx({
       kind: rec.kind,
       amount,
       label: rec.name,
-      date: rec.nextDate && rec.nextDate < state.today ? rec.nextDate : state.today,
+      date,
+      coversDate: dueISO || date,
       accountId: rec.accountId,
       categoryId: rec.categoryId,
       recurringId: rec.id
@@ -1322,7 +1333,15 @@ const App = (() => {
     rec.nextDate = F.advanceNext(rec, rec.nextDate || state.today);
     Store.save();
     payingNow.delete(id);
-    toast(rec.mode === "debt" && rec.remainingInstallments <= 0 ? rec.name + " — dernière mensualité, dette soldée" : rec.kind === "income" ? "Revenu enregistré" : rec.name + " pointé — solde réel mis à jour");
+    if (rec.mode === "debt" && rec.remainingInstallments <= 0) {
+      toast(rec.name + " — dernière mensualité, dette soldée");
+    } else if (rec.kind === "income") {
+      toast("Revenu enregistré");
+    } else if (viewedFuture && currentOpen) {
+      toast(rec.name + " pointé — noté en " + F.monthLabel(current).toLowerCase() + ", retiré de " + F.monthLabel(viewed).toLowerCase());
+    } else {
+      toast(rec.name + " pointé — solde réel mis à jour");
+    }
     return "done";
   }
 
