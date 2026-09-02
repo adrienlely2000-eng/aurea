@@ -15,7 +15,8 @@ if (!rawUrl) {
 const connectionString = rawUrl
   .replace(/&channel_binding=require/g, "")
   .replace(/\?channel_binding=require&/g, "?")
-  .replace(/\?channel_binding=require$/g, "");
+  .replace(/\?channel_binding=require$/g, "")
+  .replace(/sslmode=(require|prefer|verify-ca)\b/gi, "sslmode=verify-full");
 
 const pool = new Pool({
   connectionString,

@@ -432,6 +432,19 @@ const Finance = (() => {
       .sort((a, b) => String(a.date).localeCompare(String(b.date)));
   }
 
+  function rollUnpointedToCurrent(data, today = todayISO(), monthStartDay = 1) {
+    const current = periodOf(today, monthStartDay);
+    let changed = false;
+    (data.transactions || []).forEach((tx) => {
+      if (tx.applied !== false) return;
+      if (!tx.date || tx.date >= current.startISO) return;
+      if (!tx.coversDate) tx.coversDate = tx.date;
+      tx.date = today;
+      changed = true;
+    });
+    return changed;
+  }
+
   function settleDue(data, today = todayISO()) {
     let changed = false;
     data.transactions.forEach((tx) => {
@@ -1034,6 +1047,7 @@ const Finance = (() => {
     remainingIncome,
     chargedInPeriod,
     plannedMovements,
+    rollUnpointedToCurrent,
     settleDue,
     settleDebts,
     subStatus,

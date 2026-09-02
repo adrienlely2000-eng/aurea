@@ -176,6 +176,7 @@ const App = (() => {
     const months = F.lastMonths(data, state.period, 6, accId);
     const cmp = F.monthCompare(data, state.period, accId);
     const recent = [...data.transactions]
+      .filter((t) => t.applied !== false)
       .filter((t) => !accId || t.accountId === accId || t.toAccountId === accId)
       .sort((a, b) => b.date.localeCompare(a.date) || (b.createdAt || 0) - (a.createdAt || 0))
       .slice(0, 8);
@@ -867,6 +868,7 @@ const App = (() => {
     }
     ensurePeriod();
     ensureFocus();
+    if (F.rollUnpointedToCurrent(db(), state.today, db().settings.monthStartDay || 1)) Store.save();
     document.documentElement.dataset.theme = db().settings.theme || "dark";
     setNav();
     $("#main").innerHTML = (views[state.view] || viewDashboard)();
