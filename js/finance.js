@@ -575,6 +575,58 @@ const Finance = (() => {
       .sort((a, b) => b.total - a.total);
   }
 
+  function topPayees(data, period, accountId, limit = 5) {
+    const map = {};
+    txsInPeriod(data, period, accountId ? { accountId } : {})
+      .filter((t) => t.kind === "expense" && t.applied !== false)
+      .forEach((t) => {
+        const key = foldText(t.label).replace(/\s+/g, " ");
+        if (!key) return;
+        if (!map[key]) map[key] = { label: t.label, total: 0, count: 0 };
+        map[key].total += Number(t.amount) || 0;
+        map[key].count += 1;
+      });
+    return Object.values(map).sort((a, b) => b.total - a.total).slice(0, limit);
+  }
+
+  function labelsMatchScore(a, b) {
+    const fa = foldText(a).replace(/\s+/g, " ");
+    const fb = foldText(b).replace(/\s+/g, " ");
+    if (!fa || !fb) return 0;
+    if (fa === fb) return 100;
+    if (fa.indexOf(fb) !== -1 || fb.indexOf(fa) !== -1) return 80;
+    const parts = fb.split(/\s+/).filter((p) => p.length >= 3);
+    if (parts.some((p) => tokenHit(fa, p))) return 55;
+    const partsA = fa.split(/\s+/).filter((p) => p.length >= 4);
+    if (partsA.some((p) => tokenHit(fb, p))) return 50;
+    return 0;
+  }
+
+  function matchCsvRecurring(row, data, accountId, usedIds) {
+    if (!row || row.dup || row.noise) return null;
+    const period = periodOf(row.date, (data.settings && data.settings.monthStartDay) || 1);
+    let best = null;
+    let bestScore = 0;
+    (data.recurrings || []).forEach((rec) => {
+      if (!rec || rec.active === false) return;
+      if (usedIds && usedIds.has(rec.id)) return;
+      if (accountId && rec.accountId && rec.accountId !== accountId) return;
+      if ((rec.kind === "income") !== (row.kind === "income")) return;
+      if (chargedInPeriod(data, rec.id, period)) return;
+      const score = labelsMatchScore(row.label, rec.name);
+      if (score < 50) return;
+      const recAmt = Number(rec.amount) || 0;
+      const rowAmt = Number(row.amount) || 0;
+      const variable = rec.variable === true || (rec.variable !== false && rec.kind === "income");
+      if (!variable && recAmt > 0 && Math.abs(recAmt - rowAmt) > 0.05) return;
+      if (score > bestScore) {
+        best = rec;
+        bestScore = score;
+      }
+    });
+    return best;
+  }
+
   function budgets(data, period, accountId) {
     const spent = byCategory(data, period, "expense", accountId);
     const spentMap = Object.fromEntries(spent.map((c) => [c.id, c.total]));
@@ -1054,6 +1106,8 @@ const Finance = (() => {
     dueSoon,
     snapshot,
     byCategory,
+    topPayees,
+    matchCsvRecurring,
     budgets,
     lastMonths,
     monthCompare,

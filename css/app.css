@@ -362,6 +362,19 @@ body.is-locked .bottom-nav {
   font-size: 0.95rem;
 }
 
+button.glyph {
+  border: 0;
+  flex-shrink: 0;
+}
+
+button.glyph:hover:not(:disabled) {
+  background: var(--gold-soft);
+}
+
+button.glyph:disabled {
+  cursor: default;
+}
+
 .row b { font-weight: 500; display: block; }
 .row small { color: var(--muted); }
 .amt { font-variant-numeric: tabular-nums; font-weight: 500; }

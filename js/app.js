@@ -469,11 +469,13 @@ const App = (() => {
       const sign = t.kind === "income" ? "+" : t.kind === "transfer" ? "↔" : "−";
       const cls = t.kind === "income" ? "in" : t.kind === "expense" ? "out" : "";
       const planned = t.date > state.today;
-      return `<button class="row" data-action="edit-tx" data-id="${esc(t.id)}">
-        <span class="glyph">${esc(t.kind === "transfer" ? "↔" : cat.icon)}</span>
-        <span><b>${esc(t.label)}</b><small>${esc(F.formatDate(t.date))} · ${esc(acc ? acc.name : "")}${t.kind === "transfer" ? " → " + esc((F.accountById(data, t.toAccountId) || {}).name || "") : ""}${planned ? " · prévu" : ""}</small></span>
-        <span class="amt ${cls}">${sign} ${esc(F.money(t.amount))}</span>
-      </button>`;
+      return `<div class="row">
+        <button type="button" class="glyph" data-action="pick-tx-cat" data-id="${esc(t.id)}" title="Changer la catégorie" ${t.kind === "transfer" ? "disabled" : ""}>${esc(t.kind === "transfer" ? "↔" : cat.icon)}</button>
+        <button type="button" data-action="edit-tx" data-id="${esc(t.id)}" style="background:none;border:0;text-align:left;padding:0;display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center;width:100%">
+          <span><b>${esc(t.label)}</b><small>${esc(F.formatDate(t.date))} · ${esc(acc ? acc.name : "")}${t.kind === "transfer" ? " → " + esc((F.accountById(data, t.toAccountId) || {}).name || "") : ""}${planned ? " · prévu" : ""}</small></span>
+          <span class="amt ${cls}">${sign} ${esc(F.money(t.amount))}</span>
+        </button>
+      </div>`;
     }).join("")}</div>`;
   }
 
@@ -628,6 +630,7 @@ const App = (() => {
     const rows = F.budgets(data, state.period, focusId());
     const spentMap = Object.fromEntries(F.byCategory(data, state.period, "expense", focusId()).map((c) => [c.id, c.total]));
     const cats = data.categories.filter((c) => c.kind === "expense");
+    const payees = F.topPayees(data, state.period, focusId());
     return `
       <div class="section-title">
         <h2>Budget du mois</h2>
@@ -660,6 +663,19 @@ const App = (() => {
             </button>`).join("") || `<p class="hint">Rien d’autre dépensé hors budget.</p>`}
         </div>
       </article>
+      ${payees.length ? `
+      <div class="section-title"><h2>Où ça part le plus</h2></div>
+      <article class="card">
+        <p class="hint">Les noms qui reviennent le plus ce mois (Lidl, Carrefour…), déjà pointés.</p>
+        <div class="list">
+          ${payees.map((p) => `
+            <div class="row">
+              <span class="glyph">·</span>
+              <span><b>${esc(p.label)}</b><small>${p.count} fois</small></span>
+              <span class="amt out">${esc(F.money(p.total))}</span>
+            </div>`).join("")}
+        </div>
+      </article>` : ""}
     `;
   }
 
@@ -1198,6 +1214,24 @@ const App = (() => {
       row.dup = known.has(row.key);
       if (row.dup || row.noise) row.checked = false;
     });
+    return markCsvForfaits(rows);
+  }
+
+  function markCsvForfaits(rows) {
+    const data = db();
+    const accId = focusId();
+    const used = new Set();
+    rows.forEach((row) => {
+      row.forfaitId = "";
+      row.forfaitName = "";
+      row.pointForfait = false;
+      const rec = F.matchCsvRecurring(row, data, accId, used);
+      if (!rec) return;
+      used.add(rec.id);
+      row.forfaitId = rec.id;
+      row.forfaitName = rec.name;
+      row.pointForfait = true;
+    });
     return rows;
   }
 
@@ -1207,6 +1241,39 @@ const App = (() => {
     const slot = form.querySelector("[data-quick-cat]");
     if (!slot) return;
     slot.innerHTML = `<b>${esc(cat.icon)} ${esc(cat.name)}</b><small> · ${auto ? "choisi d’après le texte" : "choisi dans la liste"}</small>`;
+  }
+
+  function txCatModal(txId) {
+    const tx = db().transactions.find((t) => t.id === txId);
+    if (!tx || tx.kind === "transfer") {
+      toast("Un virement n’a pas de catégorie");
+      return;
+    }
+    const kind = tx.kind === "income" ? "income" : "expense";
+    const cats = db().categories.filter((c) => c.kind === kind);
+    openModal(`
+      <div class="split"><p class="kicker">Catégorie</p><button class="icon-btn" data-action="close-modal">✕</button></div>
+      <p class="hero-num" style="font-size:1.25rem">${esc(tx.label)}</p>
+      <p class="hint">Clique la nouvelle catégorie. Le montant et la date ne changent pas.</p>
+      <div class="cat-picks" style="margin-top:12px">
+        ${cats.map((c) => `<button type="button" data-action="set-tx-cat" data-id="${esc(tx.id)}" data-cat="${esc(c.id)}" class="${c.id === tx.categoryId ? "is-on" : ""}">${esc(c.icon)} ${esc(c.name)}</button>`).join("")}
+      </div>
+    `);
+  }
+
+  function setTxCategory(txId, catId) {
+    const data = db();
+    const tx = data.transactions.find((t) => t.id === txId);
+    const cat = data.categories.find((c) => c.id === catId);
+    if (!tx || !cat) return;
+    if (tx.kind === "transfer") return;
+    if (cat.kind !== (tx.kind === "income" ? "income" : "expense")) return;
+    tx.categoryId = cat.id;
+    F.rememberCategory(data, tx.label, tx.categoryId);
+    Store.save();
+    closeModal();
+    render();
+    toast("Catégorie : " + cat.name);
   }
 
   function quickCatModal() {
@@ -1228,7 +1295,7 @@ const App = (() => {
     const total = rows.filter((r) => r.checked).reduce((s, r) => s + (Number(r.amount) || 0), 0);
     openModal(`
       <div class="split"><p class="kicker">Relevé CSV</p><button class="icon-btn" data-action="close-modal">✕</button></div>
-      <p class="hint">Coche seulement ce qui compte pour toi. Les soldes, totaux et lignes déjà notées sont décochés.</p>
+      <p class="hint">Coche seulement ce qui compte pour toi. Les soldes, totaux et lignes déjà notées sont décochés. Si une ligne ressemble à un forfait, Aurea propose de le pointer.</p>
       <div style="display:flex;flex-wrap:wrap;gap:8px;margin:12px 0">
         <button class="btn ghost" type="button" data-action="csv-all">Tout cocher</button>
         <button class="btn ghost" type="button" data-action="csv-none">Tout décocher</button>
@@ -1238,11 +1305,14 @@ const App = (() => {
       <p class="hint">${n} ligne${n > 1 ? "s" : ""} choisie${n > 1 ? "s" : ""} · ${esc(F.money(total))}</p>
       <div class="list csv-pick" style="max-height:42vh;overflow:auto;margin-top:8px">
         ${rows.map((row, i) => `
-          <label class="row" data-action="csv-toggle" data-i="${i}" style="cursor:pointer;${row.checked ? "" : "opacity:.55"}">
-            <input type="checkbox" ${row.checked ? "checked" : ""} style="width:18px;height:18px;flex-shrink:0;pointer-events:none" />
-            <span><b>${esc(row.label)}</b><small>${esc(F.formatDate(row.date))}${row.dup ? " · déjà noté" : ""}${row.noise ? " · souvent inutile" : ""}</small></span>
-            <span class="amt ${row.kind === "income" ? "in" : "out"}">${row.kind === "income" ? "+" : "−"} ${esc(F.money(row.amount))}</span>
-          </label>`).join("")}
+          <div style="margin-bottom:4px">
+            <label class="row" data-action="csv-toggle" data-i="${i}" style="cursor:pointer;${row.checked ? "" : "opacity:.55"}">
+              <input type="checkbox" ${row.checked ? "checked" : ""} style="width:18px;height:18px;flex-shrink:0;pointer-events:none" />
+              <span><b>${esc(row.label)}</b><small>${esc(F.formatDate(row.date))}${row.dup ? " · déjà noté" : ""}${row.noise ? " · souvent inutile" : ""}${row.forfaitId ? " · forfait " + esc(row.forfaitName) : ""}</small></span>
+              <span class="amt ${row.kind === "income" ? "in" : "out"}">${row.kind === "income" ? "+" : "−"} ${esc(F.money(row.amount))}</span>
+            </label>
+            ${row.forfaitId && row.checked ? `<button type="button" class="chip ${row.pointForfait ? "" : "muted"}" data-action="csv-forfait" data-i="${i}" style="margin:0 0 8px 44px">${row.pointForfait ? "Pointer " + esc(row.forfaitName) : "Ne pas pointer " + esc(row.forfaitName)}</button>` : ""}
+          </div>`).join("")}
       </div>
       <button class="btn gold block" type="button" style="margin-top:16px" data-action="csv-import" ${n ? "" : "disabled"}>Importer la sélection</button>
     `);
@@ -1259,12 +1329,20 @@ const App = (() => {
       toast("Coche au moins une ligne");
       return;
     }
+    let pointed = 0;
     picked.forEach((row) => {
+      const rec = row.pointForfait && row.forfaitId
+        ? db().recurrings.find((r) => r.id === row.forfaitId)
+        : null;
       const guessed = F.suggestCategory(row.label, db());
       const guessedCat = guessed && db().categories.find((c) => c.id === guessed);
-      const categoryId = row.kind === "income"
-        ? (guessedCat && guessedCat.kind === "income" ? guessed : "cat-autre-in")
-        : (guessed || "cat-autre");
+      const categoryId = rec
+        ? rec.categoryId
+        : row.kind === "income"
+          ? (guessedCat && guessedCat.kind === "income" ? guessed : "cat-autre-in")
+          : (guessed || "cat-autre");
+      let coversDate = "";
+      if (rec) coversDate = settleRecurringMeta(rec, row.date) || "";
       addTx({
         kind: row.kind,
         amount: row.amount,
@@ -1273,14 +1351,40 @@ const App = (() => {
         accountId: acc.id,
         categoryId,
         importKey: row.key,
-        alreadyInBank: true
+        alreadyInBank: true,
+        recurringId: rec ? rec.id : "",
+        coversDate
       }, true);
+      if (rec) pointed += 1;
     });
     Store.save();
     csvDraft.rows = [];
     closeModal();
     render();
-    toast(picked.length + " ligne" + (picked.length > 1 ? "s" : "") + " importée" + (picked.length > 1 ? "s" : "") + " — le solde réel n’a pas bougé");
+    toast(
+      picked.length + " ligne" + (picked.length > 1 ? "s" : "") + " importée" + (picked.length > 1 ? "s" : "")
+      + (pointed ? " · " + pointed + " forfait" + (pointed > 1 ? "s" : "") + " pointé" + (pointed > 1 ? "s" : "") : "")
+      + " — le solde réel n’a pas bougé"
+    );
+  }
+
+  function settleRecurringMeta(rec, dateISO) {
+    const day = db().settings.monthStartDay || 1;
+    const period = F.periodOf(dateISO, day);
+    const dueISO = F.dueDateInPeriod(rec, period);
+    if (rec.mode === "debt") {
+      const left = Math.max(0, (Number(rec.remainingInstallments != null ? rec.remainingInstallments : rec.installments) || 1) - 1);
+      rec.remainingInstallments = left;
+      rec.remainingAmount = left * (Number(rec.amount) || 0);
+      if (left <= 0) rec.active = false;
+    }
+    let cursor = rec.nextDate || dueISO || dateISO;
+    let guard = 0;
+    while (cursor && cursor <= period.endISO && guard++ < 24) {
+      cursor = F.advanceNext(rec, cursor);
+    }
+    rec.nextDate = cursor;
+    return dueISO;
   }
 
   function payAmountModal(rec) {
@@ -1975,10 +2079,23 @@ const App = (() => {
         closeModal();
         break;
       }
+      case "pick-tx-cat":
+        txCatModal(id);
+        break;
+      case "set-tx-cat":
+        setTxCategory(id, act.dataset.cat);
+        break;
       case "csv-toggle": {
         e.preventDefault();
         const i = Number(act.dataset.i);
         if (csvDraft.rows[i]) csvDraft.rows[i].checked = !csvDraft.rows[i].checked;
+        csvModal();
+        break;
+      }
+      case "csv-forfait": {
+        e.preventDefault();
+        const i = Number(act.dataset.i);
+        if (csvDraft.rows[i]) csvDraft.rows[i].pointForfait = !csvDraft.rows[i].pointForfait;
         csvModal();
         break;
       }
@@ -2366,8 +2483,10 @@ const App = (() => {
     const cat = e.target.closest("[data-cat]");
     if (cat) {
       const form = cat.closest("form");
-      form.categoryId.value = cat.dataset.cat;
-      $$(".cat-picks [data-cat]", form).forEach((b) => b.classList.toggle("is-on", b === cat));
+      if (form && form.categoryId) {
+        form.categoryId.value = cat.dataset.cat;
+        $$(".cat-picks [data-cat]", form).forEach((b) => b.classList.toggle("is-on", b === cat));
+      }
     }
     const kind = e.target.closest("#kind-tabs [data-kind]");
     if (kind) {
